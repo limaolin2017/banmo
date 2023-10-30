@@ -781,15 +781,64 @@ class v2s_trainer():
             self.warmup_shape(log)
 
         # CNN pose warmup or  load CNN
+        # CNN姿态预热可能是指在正式开始训练模型之前，先通过一个预训练的卷积神经网络（CNN）来进行姿态估计的预热。
+        # 这样做的目的通常是为了初始化网络权重，使得模型在开始训练时就有一个相对较好的起点。
+        # 如果任一条件为真，就会调用 self.warmup_pose 方法，进行姿态预热或加载预训练模型。
+        # log 是用于记录进度的对象，而 pose_cnn_path 是CNN模型文件的路径。
+
+        '''
+        预训练的CNN模型:
+        预训练的CNN模型是一个已经在相关任务上训练过的模型，其参数已经基于之前的数据进行了学习。
+        在这个上下文中，预训练的CNN模型可能用于姿态估计，
+        意味着它已经在估计物体或者人的姿态上训练过，能够提供一个初始的、有用的权重集合，从而加速后续的训练过程。
+        '''
+
+        '''
+        opts.use_rtk_file 这一选项表明，代码可以配置为使用一个RTK文件。
+        RTK文件通常包含了摄像机参数和其他的跟踪数据。
+        这里的 if opts.use_rtk_file: 检查表明，如果有RTK文件提供，代码将会按照这个文件中的数据来提取摄像机参数。
+        这是一个配置选项，意味着作者或用户可以选择是否提供这样的文件来辅助训练。
+        '''
+        '''
+        opts.warmup_pose_ep 很可能是在配置模型之前设定的一个数值，它指定了姿态预热的epoch数量。
+        如果这个值大于0，则表示需要进行预热过程。预热过程是在主训练循环开始之前进行的，
+        通常用于使模型参数适应训练数据，可能通过使用较低的学习率或其他特定的训练策略来完成。
+        接下来，代码中的 self.warmup_pose 方法被调用，传入了 log 对象用于记录训练过程，
+        以及 pose_cnn_path 从 opts 对象中获取的路径，
+        这个路径可能指向一个预训练的CNN模型，用于姿态估计。
+        如果 opts.warmup_pose_ep 等于0并且 opts.pose_cnn_path 为空字符串，则不进行姿态预热，
+        而是执行 else 分支的代码。在这个分支中，代码检查 opts.use_rtk_file 是否为真。如果为真，
+        它将模型的 use_cam 属性设置为 True，执行 self.extract_cams 方法来提取相机参数，
+        并在结束后恢复 use_cam 的原始设置。如果 opts.use_rtk_file 为假，则直接执行 self.extract_cams 方法。
+        这个方法的作用是从数据加载器中提取相机参数，并将它们保存到模型的状态或文件中。
+        
+        '''
         if opts.warmup_pose_ep>0 or opts.pose_cnn_path!='':
             self.warmup_pose(log, pose_cnn_path=opts.pose_cnn_path)
+        '''
+        如果既不进行预热也不加载预训练模型，模型就需要从头开始训练，这时使用预定义的相机参数文件可以提供一个固定的起点，
+        尤其是在3D建模和计算机视觉任务中，相机参数对于定位和理解3D场景至关重要。
+        简而言之，不进行预热和不使用预训练模型意味着模型可能需要依赖其他方式，如直接从相机参数文件中获取必要的初始化信息。
+        
+        '''
         else:
             # save cameras to latest vars and file
+            # 这部分代码首先检查是否需要根据RTK文件（一种可能包含相机参数的文件）来设置相机参数。
             if opts.use_rtk_file:
+                # 临时将模型的 use_cam 设置为 True
                 self.model.module.use_cam=True
+                # 提取相机参数
                 self.extract_cams(self.dataloader)
+                '''
+                重新设置 self.model.module.use_cam=opts.use_cam 的原因可能是在执行 self.extract_cams(self.dataloader) 时，
+                需要临时改变模型的 use_cam 属性。在 self.extract_cams 方法中可能需要使用相机数据来执行某些操作，
+                而这些操作可能只在 use_cam 为 True 时才有效。在这些操作完成后，
+                作者将 use_cam 属性重置为它的原始状态（由 opts.use_cam 指定），
+                以确保模型的其它部分不会受到这一临时改变的影响。
+                '''
                 self.model.module.use_cam=opts.use_cam
             else:
+                # 如果不需要使用RTK文件，则直接提取相机参数。
                 self.extract_cams(self.dataloader)
 
         #TODO train mlp
