@@ -659,11 +659,46 @@ class v2s_trainer():
         if opts.local_rank==0:
             log = SummaryWriter('%s/%s'%(opts.checkpoint_dir,opts.logname), comment=opts.logname)
         else: log=None
+
         #重置模型的进度为0
+        '''
+        total_steps 是一个累积变量，用于追踪模型在整个训练过程中处理了多少批次（batches）或步骤（steps）。
+        将其设置为0通常表示训练过程从头开始，或者开始一个新的阶段，在这个新阶段中，之前的步骤计数不再被考虑。
+        '''
         self.model.module.total_steps = 0
+        '''
+        progress 是一个通常用于表示训练进度的变量。它可能是一个介于0和1之间的数字，表示从训练开始到结束的完成比例。
+        设置为0表示训练刚刚开始，或者是在开始新的训练阶段时的初始状态。
+        '''
         self.model.module.progress = 0
+
         #又一次设置随机种子
+        '''torch.manual_seed(8) 设置了CPU随机数生成器的种子。
+        这意味着所有依赖于CPU生成的随机数的操作（例如随机初始化参数、随机打乱数据等）将会从这个种子开始产生随机数。
+        
+
+        为什么要设置两遍随机数？
+
+        torch.manual_seed(8) 设置了CPU的随机数生成器的种子。
+        torch.cuda.manual_seed(1) 设置了当前CUDA设备的随机数生成器的种子。
+        这样做是因为PyTorch为CPU和GPU分别维护了不同的随机数生成器。
+        如果你使用的是GPU加速的计算，那么设置CUDA的种子是必要的，以确保在GPU上进行的操作（如权重初始化）也是可重复的。
+
+        
+        '''
         torch.manual_seed(8)  # do it again
+        '''
+        torch.cuda.manual_seed(1) 设置了当前CUDA设备的随机数生成器的种子。
+        这对所有依赖于GPU生成的随机数的操作产生影响，例如在GPU上进行的随机初始化操作。
+
+        随机数设置为8意味着什么？
+        随机数种子设置为8并没有特殊的含义，它只是一个任意选择的数字。
+        种子的具体值并不重要，重要的是使用相同的种子可以生成相同的随机数序列。
+        
+        随机数设置为1意味着什么？
+        和CPU的种子一样，CUDA种子设置为1也是为了确定性。
+        它也只是一个任意选择的数字，用来确保每次在GPU上运行时都得到相同的结果。
+        '''
         torch.cuda.manual_seed(1)
 
         # disable bones before warmup epochs are finished
