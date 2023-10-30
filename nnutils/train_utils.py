@@ -392,6 +392,7 @@ class v2s_trainer():
             for dataset in self.evalloader.dataset.datasets:
                 dataset.load_pair = True
 
+            #这里好像是加速模型运行的速度
             #TODO can be further accelerated
             self.model.convert_batch_input(batch)
 
@@ -425,7 +426,8 @@ class v2s_trainer():
                        }
             for idx,_ in enumerate(idx_render):
                 frameid=self.model.frameid[idx]
-                if opts.local_rank==0: 
+                #这里出现的.cpu().numpy()的含义是将数据转移到cpu然后将数据变成numpy数组
+                    if opts.local_rank==0: 
                     print('extracting frame %d'%(frameid.cpu().numpy()))
                 aux_seq['rtk'].append(rtk[idx].cpu().numpy())
                 aux_seq['kaug'].append(kaug[idx].cpu().numpy())
@@ -609,8 +611,10 @@ class v2s_trainer():
         if opts.local_rank==0:
             log = SummaryWriter('%s/%s'%(opts.checkpoint_dir,opts.logname), comment=opts.logname)
         else: log=None
+        #重置模型的进度为0
         self.model.module.total_steps = 0
         self.model.module.progress = 0
+        #又一次设置随机种子
         torch.manual_seed(8)  # do it again
         torch.cuda.manual_seed(1)
 
@@ -620,7 +624,7 @@ class v2s_trainer():
             del self.model.module.nerf_models['bones']
         if opts.lbs and opts.nerf_skin:
             del self.model.module.nerf_models['nerf_skin']
-    
+
         # warmup shape
         if opts.warmup_shape_ep>0:
             self.warmup_shape(log)
@@ -655,6 +659,7 @@ class v2s_trainer():
         # reset idk in latest_vars
         self.model.module.latest_vars['idk'][:] = 0.
    
+        #保存已经加载的与姿态相关的权重
         #TODO save loaded wts of posecs
         if opts.freeze_coarse:
             self.model.module.shape_xyz_wt = \
@@ -707,19 +712,34 @@ class v2s_trainer():
         save cameras to dir and modify dataset 
         """
         mkdir_p(save_prefix)
+        #训练集和评估集
         dataset_dict={dataset.imglist[0].split('/')[-2]:dataset for dataset in datasets}
         evalset_dict={dataset.imglist[0].split('/')[-2]:dataset for dataset in evalsets}
+        #这段代码创建了一个名为 line_dict 的字典，
+        #它将训练数据集中每个数据集的名称（通常是目录名）映射到相应的数据集对象。
         if trainloader is not None:
             line_dict={dataset.imglist[0].split('/')[-2]:dataset for dataset in trainloader}
 
+        #获取辅助序列中图像路径的数量
         length = len(aux_seq['impath'])
+        #获取一个布尔数组，表示每个图像是否有效。
         valid_ids = aux_seq['is_valid']
         idx_combine = 0
         for i in range(length):
+            #获取图像路径和对应的序列名称。
             impath = aux_seq['impath'][i]
+            #获取图像对应的序列名称。
             seqname = impath.split('/')[-2]
+            #获取相机的姿态矩阵 rtk。
             rtk = aux_seq['rtk'][i]
-           
+
+            #如果 `unc_filter` 设置为 `True`，这意味着在处理相机参数（特别是相机的旋转部分）时，代码会实施一个过滤机制，
+            #以确保使用的相机参数是有效的。在某些情况下，相机追踪或估计算法可能会失败，导致某些帧的相机参数不准确或无效。
+            #这通常发生在视觉不清晰或运动模糊强烈的帧。
+            #为了解决这个问题，代码会在同一序列中寻找最近的有效帧，并将当前帧的旋转矩阵替换为该有效帧的旋转矩阵。
+            #这种替换假设在两帧之间，相机的旋转不会有大的变化，所以一个有效帧的旋转矩阵可以作为无效帧的合理近似。
+            #这个步骤的目的是提高相机参数的整体质量，尤其是在自动化处理或长序列处理中，
+            #这样可以减少错误的相机参数对后续处理步骤（如三维重建、动画或其他计算视觉任务）的影响。       
             if unc_filter:
                 # in the same sequance find the closest valid frame and replace it
                 seq_idx = np.asarray([seqname == i.split('/')[-2] \
@@ -731,141 +751,215 @@ class v2s_trainer():
                     closest_valid_idx = valid_ids_seq[np.abs(i-valid_ids_seq).argmin()]
                     rtk[:3,:3] = aux_seq['rtk'][closest_valid_idx][:3,:3]
 
+            # 这段代码的目的是根据输入的近-远平面（near-far plane）对相机的平移参数进行缩放，
+            # 并且将更新后的相机参数保存到文件中。
+
             # rescale translation according to input near-far plane
+            # 缩放平移向量
             rtk[:3,3] = rtk[:3,3]*obj_scale
             rtklist = dataset_dict[seqname].rtklist
             idx = int(impath.split('/')[-1].split('.')[-2])
             save_path = '%s/%s-%05d.txt'%(save_prefix, seqname, idx)
+            # 保存相机参数文件 
             np.savetxt(save_path, rtk)
+            # 更新相机参数列表 
             rtklist[idx] = save_path
+            # 更新数据集字典
             evalset_dict[seqname].rtklist[idx] = save_path
+            # 条件性更新训练加载器
             if trainloader is not None:
                 line_dict[seqname].rtklist[idx] = save_path
             
             #save to rtraw 
+            #将相机的旋转和平移矩阵
             latest_vars['rt_raw'][idx_combine] = rtk[:3,:4]
+            #将相机的旋转部分单独保存到数组
+            #这里的 idx_combine 是一个索引，用于跟踪 latest_vars 字典中的位置，
+            #这个字典可能用于存储整个数据集的相机参数。
             latest_vars['rtk'][idx_combine,:3,:3] = rtk[:3,:3]
 
             if idx==len(rtklist)-2:
                 # to cover the last
+                # 生成并保存最后一帧的相机参数文件路径 save_path。
                 save_path = '%s/%s-%05d.txt'%(save_prefix, seqname, idx+1)
+                # 打印出正在写入的相机参数文件的路径（如果当前的进程 local_rank 是 0，通常表示主进程或首个进程）
                 if opts.local_rank==0: print('writing cam %s'%save_path)
+                # 使用 np.savetxt 将相机参数 rtk 保存到文本文件中。
                 np.savetxt(save_path, rtk)
+                # 更新 rtklist、evalset_dict[seqname].rtklist 和 line_dict[seqname].rtklist（如果 trainloader 不为空）数组，
+                # 使其包含最后一帧的相机参数文件路径。
                 rtklist[idx+1] = save_path
                 evalset_dict[seqname].rtklist[idx+1] = save_path
                 if trainloader is not None:
                     line_dict[seqname].rtklist[idx+1] = save_path
-
+                # 将最后一帧的相机参数保存到 latest_vars['rt_raw'] 和 latest_vars['rtk'] 字典中，确保 idx_combine 递增以继续跟踪。
                 idx_combine += 1
                 latest_vars['rt_raw'][idx_combine] = rtk[:3,:4]
                 latest_vars['rtk'][idx_combine,:3,:3] = rtk[:3,:3]
             idx_combine += 1
+    # 这样做可以确保数据集的每一帧都有相对应的相机参数文件，并且所有的参数都被记录和保存，
+    # 以备后续的处理和训练使用。在计算机视觉和三维重建中，相机参数对于正确地将二维图像映射到三维空间非常关键。
         
-        
+   # 这个函数 extract_cams 是为了提取和保存相机参数。     
     def extract_cams(self, full_loader):
         # store cameras
+        # 设定 opts 变量，这通常包含了用于指定训练选项和配置的参数.
         opts = self.opts
+        # 确定要评估的帧的索引范围，这里是 evalloader 的长度，即评估数据加载器中的所有帧。
         idx_render = range(len(self.evalloader))
         chunk = 50
+        # 设置处理相机参数的批次大小（chunk），这里是 50，表示一次处理 50 帧的相机参数
         aux_seq = []
+        # 循环遍历所有帧，每次处理一个批次的帧，并将结果存储在 aux_seq 列表中。
         for i in range(0, len(idx_render), chunk):
             aux_seq.append(self.eval_cam(idx_render=idx_render[i:i+chunk]))
+        # 使用 merge_dict 函数将多个批次的结果合并到一个字典中。
         aux_seq = merge_dict(aux_seq)
+        # 将字典中的某些键对应的列表转换为 NumPy 数组，包括 rtk（相机参数），
+        # kaug（可能是相机内参的调整），masks（遮罩），is_valid（有效帧的标记），err_valid（有效帧的误差）。
         aux_seq['rtk'] = np.asarray(aux_seq['rtk'])
         aux_seq['kaug'] = np.asarray(aux_seq['kaug'])
         aux_seq['masks'] = np.asarray(aux_seq['masks'])
         aux_seq['is_valid'] = np.asarray(aux_seq['is_valid'])
         aux_seq['err_valid'] = np.asarray(aux_seq['err_valid'])
 
+        # 设置保存相机参数的路径前缀 save_prefix。
         save_prefix = '%s/init-cam'%(self.save_dir)
         trainloader=self.trainloader.dataset.datasets
+        # 调用 save_cams 函数，将提取的相机参数保存到指定的路径，并更新数据加载器中的相应信息。
         self.save_cams(opts,aux_seq, save_prefix,
                     self.model.module.latest_vars,
                     full_loader.dataset.datasets,
                 self.evalloader.dataset.datasets,
                 self.model.obj_scale, trainloader=trainloader,
                 unc_filter=opts.unc_filter)
-        
+        # 使用 dist.barrier() 确保在所有进程中此步骤都已完成，这是并行或分布式训练时同步各个进程的常见做法。
         dist.barrier() # wait untail all have finished
+
+        # 如果当前进程的 local_rank 是 0（通常是主进程），它将调用 render_root_txt 函数为每个数据集绘制相机轨迹。
         if opts.local_rank==0:
             # draw camera trajectory
             for dataset in full_loader.dataset.datasets:
                 seqname = dataset.imglist[0].split('/')[-2]
                 render_root_txt('%s/%s-'%(save_prefix,seqname), 0)
+    # 这个函数的目的是在训练之前提取和初始化相机参数，这对于后续的三维重建和渲染是非常关键的。
+    # 通过保存相机参数，模型能够利用这些参数将二维图像正确映射到三维空间，这对于产生准确的三维重建非常重要。
 
-
+    # 这个 reset_nf 函数的目的是设置或重置模型的近平面和远平面（near-far plane），
+    # 这是三维渲染中用于确定视锥（view frustum）的参数。
     def reset_nf(self):
         opts = self.opts
         # save near-far plane
+        # 计算形状顶点的界限（shape_verts），这些顶点在单位范围内，
+        # 通过乘以近远平面的平均值并扩大 20% 来确定对象的大致大小。
         shape_verts = self.model.dp_verts_unit / 3 * self.model.near_far.mean()
         shape_verts = shape_verts * 1.2
         # save object bound if first stage
+        # 如果是训练的第一阶段（即没有预训练模型），
+        # 并且 bound_factor 大于 0，那么会按照 bound_factor 进一步扩展形状顶点的界限。
         if opts.model_path=='' and opts.bound_factor>0:
             shape_verts = shape_verts*opts.bound_factor
+            # 将计算出的对象界限保存到模型的最新变量中（latest_vars['obj_bound']）
             self.model.module.latest_vars['obj_bound'] = \
             shape_verts.abs().max(0)[0].detach().cpu().numpy()
-
+        # 如果当前的近远平面没有有效值（由 self.model.near_far[:,0].sum()==0 检查），
+        # 则调用 get_near_far 函数来计算新的近远平面值。
         if self.model.near_far[:,0].sum()==0: # if no valid nf plane loaded
             self.model.near_far.data = get_near_far(self.model.near_far.data,
                                                 self.model.latest_vars,
                                          pts=shape_verts.detach().cpu().numpy())
+        # 将计算出的近远平面值保存到指定的路径（save_path）。
         save_path = '%s/init-nf.txt'%(self.save_dir)
+        # 将近远平面值与对象的缩放比例（self.model.obj_scale）相乘，然后使用 np.savetxt 保存到文本文件中。
         save_nf = self.model.near_far.data.cpu().numpy() * self.model.obj_scale
         np.savetxt(save_path, save_nf)
-    
+    # 这个函数确保了在模型的训练或使用过程中，近远平面的设置是根据模型当前的状态和数据来确定的，
+    # 从而保持了渲染过程的一致性和准确性。
+
+    # 这个 warmup_shape 函数是在神经网络训练流程中对模型的形状进行预热的步骤。
+    # 在训练深度学习模型时，预热（warmup）通常指的是在开始进行正式的训练前先进行一段时间的训练，以此来初始化模型的权重，
+    # 使其达到一个较好的起始状态，从而有助于模型的收敛和泛化性能。
+    # 这里的“形状预热”指的可能是模型在训练前先对输入数据的形状或结构进行学习，以适应数据的分布。
     def warmup_shape(self, log):
         opts = self.opts
 
         # force using warmup forward, dataloader, cnn root
+        # 强制模型使用预热的前向传播函数 forward_warmup_shape。
+        # 这可能是一个专为预热设计的前向传播函数，与默认的前向传播函数 forward_default 有所不同。
         self.model.module.forward = self.model.module.forward_warmup_shape
         full_loader = self.trainloader  # store original loader
+        # 临时修改数据加载器 trainloader，使其仅包含200个数据点，这可能是为了加快预热阶段的训练速度。
         self.trainloader = range(200)
+        # 设置预热阶段的训练周期数 self.num_epochs 为 opts.warmup_shape_ep。
         self.num_epochs = opts.warmup_shape_ep
 
         # training
+        # 调用 init_training 函数来初始化训练设置。
         self.init_training()
         for epoch in range(0, opts.warmup_shape_ep):
             self.model.epoch = epoch
+            # 进行预热阶段的训练，对每个epoch调用 train_one_epoch 函数，
+            # 并将 warmup 参数设置为 True，可能意味着在这一阶段会应用不同的训练策略或参数。
             self.train_one_epoch(epoch, log, warmup=True)
+            # 在每个epoch结束后，调用 save_network 函数来保存当前模型的状态，文件名前缀为 'mlp-'。
             self.save_network(str(epoch+1), 'mlp-') 
 
         # restore dataloader, rts, forward function
+        # 预热结束后，将前向传播函数、数据加载器和训练周期数重置为默认值。
         self.model.module.forward = self.model.module.forward_default
         self.trainloader = full_loader
         self.num_epochs = opts.num_epochs
 
         # start from low learning rate again
+        # 再次调用 init_training 函数来重置训练设置，
+        # 并将模型的总步数 total_steps 和进度 progress 重置为0，以便开始正式的训练。
         self.init_training()
         self.model.module.total_steps = 0
         self.model.module.progress = 0.
+    # 整个预热过程是为了让模型在进入更复杂的训练阶段之前，对数据的基本形状有一个较好的适应性和理解。
 
+    # 这个 warmup_pose 函数是在神经网络训练流程中对模型的姿态（pose）进行预热的步骤。在训练深度学习模型时，
+    # 特别是在处理图像或视频数据时，对姿态的预热是为了让模型学会如何从数据中提取和理解姿态信息。
     def warmup_pose(self, log, pose_cnn_path):
         opts = self.opts
 
-        # force using warmup forward, dataloader, cnn root
+        # force using warmup forward, dataloader, cnn 
+        # 设置模型使用基于CNN的根部姿态表示 root_basis，
         self.model.module.root_basis = 'cnn'
+        # 并且暂时不使用相机参数 use_cam。
         self.model.module.use_cam = False
+        # 置模型使用专门为预热设计的前向传播函数 forward_warmup。
         self.model.module.forward = self.model.module.forward_warmup
         full_loader = self.dataloader  # store original loader
+        # 临时修改数据加载器 dataloader，使其仅包含200个数据点。
         self.dataloader = range(200)
+        # 保存原始的根部姿态表示 nerf_root_rts 并使用一个新的表示 dp_root_rts 进行预热训练。
         original_rp = self.model.module.nerf_root_rts
         self.model.module.nerf_root_rts = self.model.module.dp_root_rts
+        # 删除 dp_root_rts 以节省内存。
         del self.model.module.dp_root_rts
+        # 设置预热阶段的训练周期数为 opts.warmup_pose_ep，并标记为姿态预热阶段。
         self.num_epochs = opts.warmup_pose_ep
         self.model.module.is_warmup_pose=True
 
+        # 如果没有提供预训练的CNN模型路径，则进行姿态预热的训练。
         if pose_cnn_path=='':
             # training
+            # 初始化训练设置。
             self.init_training()
             for epoch in range(0, opts.warmup_pose_ep):
                 self.model.epoch = epoch
+                # 对每个epoch调用 train_one_epoch 函数，并将 warmup 参数设置为 True。
                 self.train_one_epoch(epoch, log, warmup=True)
+                # 在每个epoch结束后，保存当前模型状态，文件名前缀为 'cnn-'。
                 self.save_network(str(epoch+1), 'cnn-') 
 
                 # eval
                 #_,_ = self.model.forward_warmup(None)
                 # rendered_seq = self.model.warmup_rendered 
                 # if opts.local_rank==0: self.add_image_grid(rendered_seq, log, epoch)
+
+        # 如果提供了预训练的CNN模型路径，则直接加载这些状态。
         else: 
             pose_states = torch.load(opts.pose_cnn_path, map_location='cpu')
             pose_states = self.rm_module_prefix(pose_states, 
@@ -877,38 +971,48 @@ class v2s_trainer():
         self.extract_cams(full_loader)
 
         # restore dataloader, rts, forward function
+        # 恢复原始的数据加载器、根部姿态表示和前向传播函数。
         self.model.module.root_basis=opts.root_basis
         self.model.module.use_cam = opts.use_cam
         self.model.module.forward = self.model.module.forward_default
         self.dataloader = full_loader
+        # 删除临时使用的根部姿态表示 nerf_root_rts，恢复原始的 nerf_root_rts。
         del self.model.module.nerf_root_rts
         self.model.module.nerf_root_rts = original_rp
+        # 重置训练周期数和模型的其他训练设置。
         self.num_epochs = opts.num_epochs
         self.model.module.is_warmup_pose=False
 
         # start from low learning rate again
+        # 再次调用 init_training 函数来重置训练设置，
+        # 并将模型的总步数 total_steps 和进度 progress 重置为0，以便开始正式的训练。
         self.init_training()
         self.model.module.total_steps = 0
         self.model.module.progress = 0.
-            
+    
+    # 这个函数 train_one_epoch 是定义在训练类中的一个方法，负责执行模型训练过程中的一个完整的 epoch。
+    # 函数接收 epoch（当前训练的轮数），log（用于记录训练日志的对象），以及一个标记 warmup（表示是否处于预热阶段）。
     def train_one_epoch(self, epoch, log, warmup=False):
         """
         training loop in a epoch
         """
         opts = self.opts
+        # 设置模型为训练模式。
         self.model.train()
         dataloader = self.trainloader
-    
+
+        # 如果不是预热阶段，会设置数据加载器的采样器，以便打乱数据。
         if not warmup: dataloader.sampler.set_epoch(epoch) # necessary for shuffling
+        # 遍历数据加载器中的批次数据，如果达到了200次批处理乘以累积步骤数 opts.accu_steps，则中断循环。
         for i, batch in enumerate(dataloader):
             if i==200*opts.accu_steps:
                 break
-            
+            # 如果开启了调试模式，会记录和输出数据加载时间。
             if opts.debug:
                 if 'start_time' in locals().keys():
                     torch.cuda.synchronize()
                     print('load time:%.2f'%(time.time()-start_time))
-
+            # 如果不是预热阶段，会更新模型的进度指示器，选择损失指示器，并更新不同部分（如根、身体、形状等）的训练指示器。
             if not warmup:
                 self.model.module.progress = float(self.model.total_steps) /\
                                                self.model.final_steps
@@ -932,26 +1036,30 @@ class v2s_trainer():
 #
 #            self.optimizer.zero_grad()
             total_loss,aux_out = self.model(batch)
+            # 计算损失（total_loss）并除以累积步骤数（accu_steps）进行归一化。
             total_loss = total_loss/self.accu_steps
 
+            # 如果是调试模式，记录前向传播时间。
             if opts.debug:
                 if 'start_time' in locals().keys():
                     torch.cuda.synchronize()
                     print('forward time:%.2f'%(time.time()-start_time))
-
+            # 执行反向传播（.backward()），进行梯度计算。
             total_loss.mean().backward()
-            
+            # 如果是调试模式，记录反向传播的时间。
             if opts.debug:
                 if 'start_time' in locals().keys():
                     torch.cuda.synchronize()
                     print('forward back time:%.2f'%(time.time()-start_time))
 
+            # 每经过 accu_steps 次迭代，进行梯度裁剪和优化器步骤，并更新学习率调度器。
             if (i+1)%self.accu_steps == 0:
                 self.clip_grad(aux_out)
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-
+                # 如果发现根部姿态表示的梯度大于某个阈值，并且已经执行了足够的总步数，
+                # 则会从保存的最新模型中重新加载参数，这是为了防止梯度爆炸或者不稳定的训练情况。
                 if aux_out['nerf_root_rts_g']>1*opts.clip_scale and \
                                 self.model.total_steps>200*self.accu_steps:
                     latest_path = '%s/params_latest.pth'%(self.save_dir)
@@ -961,19 +1069,24 @@ class v2s_trainer():
                 aux_out['lr_%02d'%i] = param_group['lr']
 
             self.model.module.total_steps += 1
+            # 减少冻结和重新骨化的计数器（counter_frz_rebone）。
             self.model.module.counter_frz_rebone -= 1./self.model.final_steps
             aux_out['counter_frz_rebone'] = self.model.module.counter_frz_rebone
 
+            # 如果是主进程（opts.local_rank==0），则保存日志。
             if opts.local_rank==0: 
                 self.save_logs(log, aux_out, self.model.module.total_steps, 
                         epoch)
-            
+            # 如果是调试模式，记录每个总步骤的时间，并同步 CUDA 设备。
             if opts.debug:
                 if 'start_time' in locals().keys():
                     torch.cuda.synchronize()
                     print('total step time:%.2f'%(time.time()-start_time))
                 torch.cuda.synchronize()
                 start_time = time.time()
+    
+    # 整个函数的目的是在训练过程中按批次迭代数据，更新模型参数，并记录训练进度。通过传入的 warmup 参数，
+    # 它可以区分是否处于预热阶段，从而调整训练行为。例如，在预热阶段可能不会更新学习率或者不会执行某些特定的更新策略。
     
     def update_cvf_indicator(self, i):
         """
