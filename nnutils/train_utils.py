@@ -769,7 +769,15 @@ class v2s_trainer():
             del self.model.module.nerf_models['nerf_skin']
 
         # warmup shape
+        '''
+        在机器学习和特别是深度学习中，“预热”通常指的是训练过程的一部分，
+        其中开始时学习率较低或其他参数被设定为帮助模型慢慢调整到较复杂任务的最优点。
+        '''
         if opts.warmup_shape_ep>0:
+        '''
+        self.warmup_shape(log) 是调用当前类的 warmup_shape 方法，log 参数很可能是用于记录训练进度和结果的对象，
+        例如TensorBoard的 SummaryWriter。这个方法会负责执行形状预热的实际步骤。
+        '''
             self.warmup_shape(log)
 
         # CNN pose warmup or  load CNN
