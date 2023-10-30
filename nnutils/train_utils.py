@@ -607,7 +607,55 @@ class v2s_trainer():
         return rendered_seq, aux_seq
 
     def train(self):
-        opts = self.opts
+        opts = self.opt
+        '''
+        如果是多gpus训练，local_rank的数值会来回切换吗？
+
+        在多GPU训练的情况下，每个GPU进程通常会在训练开始时被分配一个固定的 `local_rank` 值，
+        这个值在训练过程中是不会变化的。每个GPU进程的 `local_rank` 是唯一的，并且用于区分不同的GPU。
+        例如，在一个有四个GPU的系统上进行分布式训练时，可能会有以下的 `local_rank` 分配：
+        - GPU 0 -> `local_rank = 0`
+        - GPU 1 -> `local_rank = 1`
+        - GPU 2 -> `local_rank = 2`
+        - GPU 3 -> `local_rank = 3`
+
+        在整个训练过程中，每个GPU进程会保持它被分配的 `local_rank`。
+        在一些分布式训练框架中，
+        例如PyTorch的 `torch.distributed`，`local_rank` 是在训练脚本启动时通过环境变量或命令行参数传递给每个进程的。
+        这个值会被用来设置进程应该使用的GPU，以及在需要进行跨进程通信时确定通信的对象。
+        '''
+
+        '''
+        在分布式训练中，local_rank 主要用于在单个节点上区分进程和分配 GPU。而 rank（或称为 global_rank）则用于在所有进程之间进行区分。例如，如果你有 2 个节点，每个节点有 2 个 GPU，那么可能的 rank 和 local_rank 分配如下：
+
+        节点 1
+        GPU 0 -> local_rank = 0, global_rank = 0
+        GPU 1 -> local_rank = 1, global_rank = 1
+        节点 2
+        GPU 0 -> local_rank = 0, global_rank = 2
+        GPU 1 -> local_rank = 1, global_rank = 3
+        '''
+
+
+        '''
+        opts.local_rank == 1 意味着什么？
+        这意味着当前的代码正在第二个GPU上执行。这通常用于决定是否执行某些操作。
+        例如，在代码的日志记录部分，可能只想在 local_rank = 0 的GPU上执行，
+        以避免多个进程写入同一个日志文件。
+        '''
+
+        '''
+        'opts.local_rank==1'意味着什么？
+        这意味着当前进程在其节点上的GPU排序是第二位。
+        这个进程可能负责执行计算任务，但通常不负责执行日志记录或保存模型等任务。
+
+        'opts.local_rank==0'意味着程序在主线程上运行，一般来说我们会记录日志，对吗？
+        是的，opts.local_rank==0 通常用于确定哪个进程会负责输出日志或进行与文件系统交互的操作，如保存模型。
+        在多节点多GPU的设置中，每个节点上的 local_rank == 0 的进程通常负责这类“主进程”任务，
+        但是只有全局排名为0的进程（即第一个节点上的 local_rank == 0 的进程）才是整个分布式训练中的主进程。       
+        
+        '''
+
         if opts.local_rank==0:
             log = SummaryWriter('%s/%s'%(opts.checkpoint_dir,opts.logname), comment=opts.logname)
         else: log=None
@@ -1088,6 +1136,8 @@ class v2s_trainer():
     # 整个函数的目的是在训练过程中按批次迭代数据，更新模型参数，并记录训练进度。通过传入的 warmup 参数，
     # 它可以区分是否处于预热阶段，从而调整训练行为。例如，在预热阶段可能不会更新学习率或者不会执行某些特定的更新策略。
     
+    # 这个函数 update_cvf_indicator 是一个训练类中的一部分，用于控制训练过程中是否更新规范体积特征（Canonical Volume Features，简称 CVF）。
+    # CVF 在神经渲染或 3D 重建框架中可能代表场景体积的某种持久和规范的特征表示。
     def update_cvf_indicator(self, i):
         """
         whether to update canoical volume features
@@ -1097,19 +1147,33 @@ class v2s_trainer():
         opts = self.opts
 
         # during kp reprojection optimization
+        # 关键点重投影优化期间：
+        # 如果选项 opts 中的 freeze_proj 设置为 True，并且模型的进度在 proj_start 和 proj_end 之间，
+        # 此时应该冻结 CVF，不进行更新（将 cvf_update 设置为 1）。
+        # 这段时间可能是专门用来优化关键点重投影的，更新 CVF 可能会对此过程产生负面影响。
         if (opts.freeze_proj and self.model.module.progress >= opts.proj_start and \
                self.model.module.progress < (opts.proj_start+opts.proj_end)):
             self.model.module.cvf_update = 1
         else:
             self.model.module.cvf_update = 0
         
-        # freeze shape after rebone        
+        # freeze shape after rebone      
+        # 如果 counter_frz_rebone 大于 0，表明模型处于重新定义骨架之后的一个时期，
+        # 在这个时期内应该冻结形状，因此也不更新 CVF（将 cvf_update 设置为 1）。  
         if self.model.module.counter_frz_rebone > 0:
             self.model.module.cvf_update = 1
-
+        # 冻结 CVF：如果选项 opts 中的 freeze_cvf 设置为 True，
+        # 则在训练期间应该冻结 CVF，不进行更新（将 cvf_update 设置为 1）。
         if opts.freeze_cvf:
             self.model.module.cvf_update = 1
     
+    # 当 cvf_update 设置为 0 时，表示 CVF 可以在训练过程中更新。这个标志用于根据训练的当前阶段或正在执行的特定操作，
+    # 有选择地冻结或更新 CVF，从而允许对训练过程进行更多的控制，并可能获得更好的训练结果。
+
+    # 这个函数 update_shape_indicator 是神经网络训练过程中的一部分，用于控制模型形状参数是否应该被更新。
+    # 在训练深度学习模型时，有时需要冻结网络的某些部分以防止它们在特定阶段被更新，这就是所谓的冻结（freeze）。
+    # 这个函数根据训练的不同阶段和设定的条件，动态决定是否更新（或冻结）模型的形状参数。
+
     def update_shape_indicator(self, i):
         """
         whether to update shape
@@ -1119,6 +1183,11 @@ class v2s_trainer():
         opts = self.opts
         # incremental optimization
         # or during kp reprojection optimization
+        # 如果模型已经预加载了权重（opts.model_path != ''），
+        # 且训练进度（self.model.module.progress）小于预热步数（opts.warmup_steps），
+        # 或者如果设置了冻结投影参数（opts.freeze_proj）并且训练进度在投影的起始和结束阶段（opts.proj_start 
+        # 到 opts.proj_end）之间，
+        # 这时应该冻结形状更新（self.model.module.shape_update = 1）。
         if (opts.model_path!='' and \
         self.model.module.progress < opts.warmup_steps)\
          or (opts.freeze_proj and self.model.module.progress >= opts.proj_start and \
@@ -1127,13 +1196,22 @@ class v2s_trainer():
         else:
             self.model.module.shape_update = 0
 
-        # freeze shape after rebone        
+        # freeze shape after rebone
+        # 如果 counter_frz_rebone 大于 0，表明模型处于重新定义骨架之后的一个时期，
+        # 在这个时期内应该冻结形状更新（self.model.module.shape_update = 1）。   
         if self.model.module.counter_frz_rebone > 0:
             self.model.module.shape_update = 1
-
+        # 如果设置了 opts.freeze_shape，表示在整个训练过程中都要冻结形状参数（self.model.module.shape_update = 1）。
         if opts.freeze_shape:
             self.model.module.shape_update = 1
-    
+    # 当 self.model.module.shape_update 设置为 0 时，表示形状参数可以在训练过程中更新。
+    # 这个标志用于根据训练的当前阶段或正在执行的特定操作，
+    # 有选择性地冻结或更新形状参数，从而可以更精细地控制训练过程。
+
+    # 函数 update_root_indicator 的作用是控制模型根姿态（即整体的位置和旋转，通常是指模型的全局变换）
+    # 是否应该在训练过程中更新。
+    # 这种控制对于训练稳定性或确保训练的特定阶段专注于特定的参数非常重要。
+
     def update_root_indicator(self, i):
         """
         whether to update root pose
@@ -1141,6 +1219,10 @@ class v2s_trainer():
         0: freeze
         """
         opts = self.opts
+        # 如果设置了投影参数的冻结（opts.freeze_proj）并且启用了根姿态稳定（opts.root_stab）：
+        # 当模型的训练进度（self.model.module.progress）在冻结根姿态开始（opts.frzroot_start）
+        # 和投影结束后的短暂阶段（opts.proj_start + opts.proj_end + 0.01）之间时，
+        # 根姿态更新被冻结（self.model.module.root_update = 0）。这通常是为了在进行关键点重投影优化时保持根姿态的稳定。
         if (opts.freeze_proj and \
             opts.root_stab and \
            self.model.module.progress >=(opts.frzroot_start) and \
@@ -1150,13 +1232,17 @@ class v2s_trainer():
         else:
             self.model.module.root_update = 1
         
-        # freeze shape after rebone        
+        # freeze shape after rebone
+        # 如果 counter_frz_rebone 的计数大于 0，这表明模型正处于一个特定的训练阶段，
+        # 在这个阶段应该冻结根姿态更新（self.model.module.root_update = 0）。
         if self.model.module.counter_frz_rebone > 0:
             self.model.module.root_update = 0
         
         if opts.freeze_root: # to stablize
             self.model.module.root_update = 0
-    
+    # 函数 update_body_indicator 的作用是在训练过程中控制模型的身体部位是否应该更新。
+    # 这对于冻结训练的某些部分，以便训练集中于特定的参数或部分，是非常有用的。
+
     def update_body_indicator(self, i):
         """
         whether to update root pose
@@ -1164,13 +1250,24 @@ class v2s_trainer():
         0: freeze
         """
         opts = self.opts
+        
+        # 如果设置了投影冻结（opts.freeze_proj）：
+        # 当模型的训练进度（self.model.module.progress）
+        # 小于或等于冻结身体更新的结束点（opts.frzbody_end）时，身体更新将被冻结（self.model.module.body_update = 0）。
+        # 这意味着在这个阶段，
+        # 模型的身体部分的参数不会更新，这可能是因为开发者希望在训练的早期阶段集中优化其他部分，如根姿态或其他特征。
         if opts.freeze_proj and \
            self.model.module.progress <=opts.frzbody_end: 
             self.model.module.body_update = 0
+        
+        # 否则：如果不在上述条件中，身体更新标志被设置为 1（self.model.module.body_update = 1），
+        # 表示模型的身体部位的参数可以在训练过程中更新。
         else:
             self.model.module.body_update = 1
+        # 此函数允许开发者通过控制 body_update 标志来有选择地冻结或更新模型的身体部分。
+        # 这样的控制可以帮助在训练的特定阶段内提高稳定性和性能。
 
-        
+
     def select_loss_indicator(self, i):
         """
         0: flo
