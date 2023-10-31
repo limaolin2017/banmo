@@ -131,11 +131,32 @@ class NeRF(nn.Module):
         in_channels_code: only used for nerf_skin,
         """
         super(NeRF, self).__init__()
+
+        # D 网络的层数，用于密度（sigma）编码器。
+        '''
+        "D"指的是网络中用于密度（或称为sigma）编码的层数。它是一个参数，
+        表示在构建用于估计场景中每个点的密度（这对于渲染过程来说是至关重要的）的网络时应使用多少层。
+        代码中的 D=8 表示使用了8层网络来进行密度编码。每一层都会接收输入特征，并输出到下一层，直到最后一层输出密度值（sigma）。这些层可以帮助网络学习场景的复杂几何特性。
+        '''
         self.D = D
+
+        # 每一层的隐藏单元数。
+        '''
+        在神经网络中，"隐藏单元"（通常也称为"神经元"或"节点"）指的是网络中非输入层的单个处理元素。每个隐藏单元接收来自前一层的输入，并将其与一组权重相乘（加上一个偏置），
+        然后通过一个激活函数来产生输出，该输出将传递到下一层。
+        这段代码中提到的"每一层的隐藏单元数"指的是每个隐藏层中的神经元数量。
+        在NeRF类的构造函数中，参数W表示每个隐藏层的宽度，即每一层中隐藏单元的数量。在这个实现中，所有隐藏层都被设置为具有相同数量的隐藏单元W。
+        例如，如果W设置为256，这意味着每个隐藏层都有256个神经元。每个隐藏层的输入将与一个W×W的权重矩阵相乘（对于跳过连接的层，权重矩阵的大小将为
+        (W+输入特征数)×W），这样每个层都能输出一个宽度为W的向量。
+        这些隐藏单元是构成深度学习模型中隐藏层的基本构建块，允许模型学习和表示数据中的复杂模式和关系。
+        '''
         self.W = W
+
+        # in_channels_xyz和in_channels_dir分别代表了空间位置和方向输入的特征数量。
         self.in_channels_xyz = in_channels_xyz
         self.in_channels_dir = in_channels_dir
         self.in_channels_code = in_channels_code
+        # skips是一个列表，指示应在哪些层添加跳跃连接，以提高模型性能。
         self.skips = skips
         self.use_xyz = False
 
@@ -150,6 +171,8 @@ class NeRF(nn.Module):
                 self.weights_reg.append(f"xyz_encoding_{i+1}")
             else:
                 layer = nn.Linear(W, W)
+        
+            # activation是激活函数，这里默认使用ReLU。
             layer = nn.Sequential(layer, activation)
             setattr(self, f"xyz_encoding_{i+1}", layer)
         self.xyz_encoding_final = nn.Linear(W, W)
@@ -164,9 +187,10 @@ class NeRF(nn.Module):
         self.rgb = nn.Sequential(
                         nn.Linear(W//2, out_channels),
                         )
-
+        # raw_feat是一个标志，用于指示模型是否应该输出原始特征（未经激活函数处理的）。
         self.raw_feat = raw_feat
-
+        
+        # init_beta是初始化密度（sigma）预测的权重的参数。
         self.beta = torch.Tensor([init_beta]) # logbeta
         self.beta = nn.Parameter(self.beta)
         
