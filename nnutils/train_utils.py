@@ -935,6 +935,10 @@ class v2s_trainer():
         # clear buffers for pytorch1.10+
         try: self.model._assign_modules_buffers()
         except: pass
+        '''
+        用来分配或重置模型的缓冲区（buffers）。
+        缓冲区通常用于保存跨多次前向传播迭代不变的数据，比如批量归一化层（BatchNorm）中的运行时均值和方差。
+        '''
 
         # set near-far plane
         if opts.model_path=='':
@@ -945,6 +949,9 @@ class v2s_trainer():
    
         #保存已经加载的与姿态相关的权重
         #TODO save loaded wts of posecs
+        # 这段代码的目的是在某些训练阶段冻结（freeze）神经辐射场（NeRF）的某些权重。在训练深度学习模型时，
+        # 有时我们希望固定（或“冻结”）某些层的权重，以便它们在后续的训练迭代中不会更新。
+        # 这样做可以避免已经学习到有用特征的权重被破坏，尤其是在微调（fine-tuning）阶段或者当我们想要固定某些特征表示时。
         if opts.freeze_coarse:
             self.model.module.shape_xyz_wt = \
                 grab_xyz_weights(self.model.module.nerf_coarse, clone=True)
@@ -955,22 +962,33 @@ class v2s_trainer():
 
         #TODO reset beta
         if opts.reset_beta:
+            # 将 nerf_coarse 模型中的 beta 参数的所有元素都设置为了 0.1。
             self.model.module.nerf_coarse.beta.data[:] = 0.1
+            # 一个神经辐射场（NeRF）模型的粗糙（coarse）版本
 
         # start training
         for epoch in range(0, self.num_epochs):
+            # 在每个epoch的开始，设置self.model.epoch为当前的epoch，用于跟踪训练进度。
             self.model.epoch = epoch
 
             # evaluation
+            # 清空CUDA缓存以释放未使用的GPU内存。
             torch.cuda.empty_cache()
+            # 设置模型的图像尺寸为评估（渲染）大小，opts.render_size。
             self.model.module.img_size = opts.render_size
-            rendered_seq, aux_seq = self.eval()                
+            # 调用self.eval()函数进行模型评估，可能是在验证集上，得到渲染的序列rendered_seq和辅助序列aux_seq。
+            rendered_seq, aux_seq = self.eval()    
+            # 将模型的图像尺寸重置为训练尺寸，opts.img_size            
             self.model.module.img_size = opts.img_size
+            # 如果是第一个epoch，保存一些相机参数，这通常用于初始化或者确保模型有一个稳定的开始。
             if epoch==0: self.save_network('0') # to save some cameras
+            # 如果当前进程是主进程（opts.local_rank==0），将渲染的图像序列添加到TensorBoard日志。
             if opts.local_rank==0: self.add_image_grid(rendered_seq, log, epoch)
 
+            # 调用self.reset_hparams(epoch)函数重置或更新某些超参数，可能基于当前的epoch。
             self.reset_hparams(epoch)
 
+            # 再次清空CUDA缓存。
             torch.cuda.empty_cache()
             
             ## TODO harded coded
@@ -982,12 +1000,27 @@ class v2s_trainer():
             #        #opts.nsample = nsample
             #        opts.ndepth = self.model.module.ndepth_bk
 
+            # 进行实际的训练，调用self.train_one_epoch(epoch, log)函数执行一个epoch的训练。
             self.train_one_epoch(epoch, log)
-            
+    
+            # 打印保存模型的信息
             print('saving the model at the end of epoch {:d}, iters {:d}'.\
                               format(epoch, self.model.module.total_steps))
+            # 保存一个最新的（'latest'）模型状态
             self.save_network('latest')
+            # 保存一个以epoch编号命名的模型状态
             self.save_network(str(epoch+1))
+
+            '''
+            按照 self.num_epochs 指定的次数执行多个 epoch。self.num_epochs 是在代码的其他部分设置的，
+            这个值定义了总共需要进行多少个训练周期。这个循环确保模型会经过多次迭代的训练，
+            每次迭代都可能更新模型的权重，以改进其性能。
+            '''
+
+            '''
+            此代码块的目的是进行模型的训练，同时在每个epoch结束后进行评估，保存模型状态，并在TensorBoard上记录训练过程。
+            这是一个典型的训练循环，确保模型在每个epoch之后得到保存和评估，以便监控训练进度和性能。
+            '''
 
     @staticmethod
     def save_cams(opts,aux_seq, save_prefix, latest_vars,datasets, evalsets, obj_scale,
