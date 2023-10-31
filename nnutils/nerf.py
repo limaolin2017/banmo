@@ -1,3 +1,40 @@
+# ReadMe
+'''
+NeRF是干什么用的？
+NeRF用于合成3D场景的新视图。它将空间位置和视角方向编码为颜色和密度，
+然后通过体积渲染来合成新的图像。
+它可以用于虚拟现实、增强现实、视觉特效以及任何需要精确和真实感3D渲染的应用。
+
+
+NeRF是如何建模的？
+NeRF使用多层感知机（MLP）来建模一个场景。
+它将3D坐标和观察方向作为输入，并输出对应的颜色（RGB）值和体积密度（sigma）。
+这个文件中的 NeRF 类定义了这个基本的结构，包括对空间位置（xyz）和方向（dir）的编码层，以及最终的输出层。
+
+NeRF通过神经网络模型来学习场景的连续体积表示。它采用以下几个步骤建模：
+
+位置编码（Positional Encoding）: 将输入的连续坐标（如空间位置和视线方向）通过三角函数映射到一个高维空间，以捕获更细微的变化。
+网络架构（Network Architecture）: 使用多层感知机（MLP），该模型预测通过3D空间中每个点的颜色和密度（即场景的体积表示）。
+渲染（Rendering）: 使用体积渲染技术，通过在每条光线上积分来合成图像。
+
+nerf.py 文件包含了用于实现神经辐射场（NeRF）模型及其变种的类和函数。NeRF 是一种用于3D场景重建和视图合成的深度学习方法，
+通过对场景的密集采样和神经网络的训练，可以从一组稀疏的视角生成新的视角图像。
+
+NeRF的输入输出是什么？
+输入：
+
+空间位置（XYZ坐标）: 表示场景中的点。
+视线方向: 表示观察该点的方向。
+输出：
+
+颜色（RGB值）: 预测的每个点的颜色。
+密度（Sigma值）: 预测的每个点的体积密度。
+
+'''
+
+
+
+
 # Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
 
 import numpy as np
@@ -10,6 +47,7 @@ from pytorch3d import transforms
 import trimesh
 from nnutils.geom_utils import fid_reindex
 
+#Embedding: 进行位置编码。
 class Embedding(nn.Module):
     def __init__(self, in_channels, N_freqs, logscale=True, alpha=None):
         """
@@ -75,7 +113,7 @@ class Embedding(nn.Module):
         return out
 
 
-
+# NeRF: 基础的NeRF网络结构。
 class NeRF(nn.Module):
     def __init__(self,
                  D=8, W=256,
@@ -183,7 +221,8 @@ class NeRF(nn.Module):
             rgb = rgb.sigmoid()
             out = torch.cat([rgb, sigma], -1)
         return out
-
+# Transhead, SE3head, RTHead, 
+# FrameCode, RTExplicit, RTExpMLP, ScoreHead, NeRFUnc: 为不同的场景或特殊用途定制的NeRF变种。
 class Transhead(NeRF):
     """
     translation head
@@ -429,6 +468,7 @@ class NeRFUnc(NeRF):
         unc = super(NeRFUnc, self).forward(x, sigma_only=sigma_only)
         return unc
 
+# ResNetConv 和 Encoder: 用于图像特征提取的卷积神经网络结构。
 class ResNetConv(nn.Module):
     """
     adapted from https://github.com/shubhtuls/factored3d/blob/master/nnutils/net_blocks.py
