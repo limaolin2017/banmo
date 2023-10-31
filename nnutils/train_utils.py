@@ -1015,6 +1015,7 @@ class v2s_trainer():
             按照 self.num_epochs 指定的次数执行多个 epoch。self.num_epochs 是在代码的其他部分设置的，
             这个值定义了总共需要进行多少个训练周期。这个循环确保模型会经过多次迭代的训练，
             每次迭代都可能更新模型的权重，以改进其性能。
+            
             '''
 
             '''
@@ -1306,9 +1307,10 @@ class v2s_trainer():
         self.init_training()
         self.model.module.total_steps = 0
         self.model.module.progress = 0.
-    
+
     # 这个函数 train_one_epoch 是定义在训练类中的一个方法，负责执行模型训练过程中的一个完整的 epoch。
     # 函数接收 epoch（当前训练的轮数），log（用于记录训练日志的对象），以及一个标记 warmup（表示是否处于预热阶段）。
+
     def train_one_epoch(self, epoch, log, warmup=False):
         """
         training loop in a epoch
@@ -1320,6 +1322,7 @@ class v2s_trainer():
 
         # 如果不是预热阶段，会设置数据加载器的采样器，以便打乱数据。
         if not warmup: dataloader.sampler.set_epoch(epoch) # necessary for shuffling
+
         # 遍历数据加载器中的批次数据，如果达到了200次批处理乘以累积步骤数 opts.accu_steps，则中断循环。
         for i, batch in enumerate(dataloader):
             if i==200*opts.accu_steps:
@@ -1401,12 +1404,15 @@ class v2s_trainer():
                     print('total step time:%.2f'%(time.time()-start_time))
                 torch.cuda.synchronize()
                 start_time = time.time()
-    
+
     # 整个函数的目的是在训练过程中按批次迭代数据，更新模型参数，并记录训练进度。通过传入的 warmup 参数，
     # 它可以区分是否处于预热阶段，从而调整训练行为。例如，在预热阶段可能不会更新学习率或者不会执行某些特定的更新策略。
-    
-    # 这个函数 update_cvf_indicator 是一个训练类中的一部分，用于控制训练过程中是否更新规范体积特征（Canonical Volume Features，简称 CVF）。
+
+
+    # 这个函数 update_cvf_indicator 是一个训练类中的一部分，
+    # 用于控制训练过程中是否更新规范体积特征（Canonical Volume Features，简称 CVF）。
     # CVF 在神经渲染或 3D 重建框架中可能代表场景体积的某种持久和规范的特征表示。
+
     def update_cvf_indicator(self, i):
         """
         whether to update canoical volume features
@@ -1793,23 +1799,34 @@ class v2s_trainer():
 
     @staticmethod 
     def render_vid(model, batch):
+        # 获取模型的配置选项。
         opts=model.opts
+        # 模型设置输入数据批次。
         model.set_input(batch)
+        # 获取模型的相机姿态参数（通常是旋转矩阵和平移向量）。
         rtk = model.rtk
+        # 克隆相机内参矩阵的增强版本，这些内参矩阵可能已经根据某些条件进行了调整或优化。
         kaug=model.kaug.clone()
+        # 获取嵌入ID，这可能是用于查找嵌入式特征的索引或键。
         embedid=model.embedid
 
+        # 调用 nerf_render 函数渲染图像，使用提供的相机姿态参数、相机内参和嵌入ID，ndepth 参数指定渲染时使用的深度层数。
         rendered, _ = model.nerf_render(rtk, kaug, embedid, ndepth=opts.ndepth)
+        # 从 rendered 字典中删除不需要的可视化关键字
         if 'xyz_camera_vis' in rendered.keys():    del rendered['xyz_camera_vis']   
         if 'xyz_canonical_vis' in rendered.keys(): del rendered['xyz_canonical_vis']
         if 'pts_exp_vis' in rendered.keys():       del rendered['pts_exp_vis']      
-        if 'pts_pred_vis' in rendered.keys():      del rendered['pts_pred_vis']     
+        if 'pts_pred_vis' in rendered.keys():      del rendered['pts_pred_vis'] 
+        # 初始化一个空字典来存储最终的渲染结果。    
         rendered_first = {}
+        # 迭代 rendered 字典的条目：对于字典中的每个条目，如果它是一个多维张量，只取批次大小的一半。
+        # 这可能是为了去除用于损失计算的术语，或者只是为了从可能是成对数据的集合中获取第一组数据。
         for k,v in rendered.items():
             if v.dim()>0: 
                 bs=v.shape[0]
                 rendered_first[k] = v[:bs//2] # remove loss term
         return rendered_first 
+        # 函数返回的 rendered_first 字典包含每个键的前半部分数据，这可能是用于视频渲染中的实际图像帧。
 
     @staticmethod
     def extract_mesh(model,chunk,grid_size,
