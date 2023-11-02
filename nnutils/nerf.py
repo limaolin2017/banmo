@@ -193,11 +193,27 @@ class NeRF(nn.Module):
         # init_beta是初始化密度（sigma）预测的权重的参数。
         self.beta = torch.Tensor([init_beta]) # logbeta
         self.beta = nn.Parameter(self.beta)
-        
+
 #        for m in self.modules():
 #            if isinstance(m, nn.Linear):
 #                if hasattr(m.weight,'data'):
 #                    nn.init.xavier_uniform_(m.weight)
+
+        ''' 
+        forward函数是模型的前向传播函数，接受输入x（包含空间位置和方向的嵌入向量）并输出颜色（rgb）和密度（sigma）。
+        如果设置sigma_only为True，则只输出密度。如果raw_feat为False，则在输出之前将rgb值通过sigmoid函数进行激活。
+
+
+
+        前向传播函数: 前向传播函数（通常在神经网络的类定义中称为 forward 函数）是指当输入数据进入网络时，
+        数据通过网络层一直向前传播直到输出层的过程。这个过程包括了所有的线性变换（比如 nn.Linear 层），
+        激活函数（在这个案例中是 ReLU），以及其他任何网络可能进行的计算。forward 函数的输出是网络的最终预测结果。
+        在 PyTorch 中，forward 函数是 nn.Module 类的一个核心部分，当你调用模型实例时（例如 model(x)），实际上是在调用这个 forward 函数。
+
+        在这个 NeRF 实现中，前向传播函数接受一个输入 x，
+        它是空间位置（xyz）和视角（dir）的嵌入向量。该函数首先将输入向量分割为位置和方向组成部分，然后通过一系列编码层来生成场景的密度（sigma）和颜色（RGB）。
+        如果 sigma_only 参数为真，函数只返回场景的密度值；否则，它会返回颜色和密度的组合。这些输出最终将被用于渲染步骤，以生成最终的2D图像。
+        '''
 
     def forward(self, x ,xyz=None, sigma_only=False):
         """
@@ -217,36 +233,57 @@ class NeRF(nn.Module):
             else:
                 out: (B, 4), rgb and sigma
         """
+        
         if not sigma_only:
             input_xyz, input_dir = \
                 torch.split(x, [self.in_channels_xyz, self.in_channels_dir], dim=-1)
         else:
             input_xyz, input_dir = \
                 torch.split(x, [self.in_channels_xyz, 0], dim=-1)
-
+        
+        # 初始化用于进入编码层的变量 xyz_ 为位置编码的输入。
         xyz_ = input_xyz
+        # 对于每个密度编码层进行迭代。
         for i in range(self.D):
+            # 如果当前层应该有跳过连接，则...
             if i in self.skips:
+                # 将原始的位置编码 input_xyz 与当前的 xyz_ 结合起来。
                 xyz_ = torch.cat([input_xyz, xyz_], -1)
+            # 应用第 i+1 个位置编码层，并更新 xyz_。
             xyz_ = getattr(self, f"xyz_encoding_{i+1}")(xyz_)
-
+        # 用最后一层位置编码的输出来计算密度（sigma）。
         sigma = self.sigma(xyz_)
+        # 如果只需要密度（sigma），则直接返回它。
         if sigma_only:
             return sigma
 
+        # 将最后一层位置编码的输出传递给一个额外的线性层，得到最终的位置编码。
         xyz_encoding_final = self.xyz_encoding_final(xyz_)
-
+        # 将最终的位置编码与方向编码合并，准备输入到方向编码层。
         dir_encoding_input = torch.cat([xyz_encoding_final, input_dir], -1)
+        # 应用方向编码层。
         dir_encoding = self.dir_encoding(dir_encoding_input)
+        #  使用方向编码的结果来计算 RGB 颜色。
         rgb = self.rgb(dir_encoding)
+        # 如果使用原始特征，直接将 RGB 作为输出。
         if self.raw_feat:
             out = rgb
+        # 否则，使用 sigmoid 函数激活 RGB 颜色值，以确保它们在 [0, 1] 范围内。
         else:
             rgb = rgb.sigmoid()
+            # 将 RGB 和密度（sigma）合并为最终输出。
             out = torch.cat([rgb, sigma], -1)
         return out
+    
+        '''
+            整个 forward 函数的目的是根据输入的位置（xyz）和方向（dir）编码
+            来预测每个光线上的颜色（RGB）和体积密度（sigma）。当 sigma_only 为 True 时，函数只预测密度，这在某些渲染步骤中是有用的，例如，当只需要深度信息而不需要颜色信息时。
+        
+        
+        '''
 # Transhead, SE3head, RTHead, 
 # FrameCode, RTExplicit, RTExpMLP, ScoreHead, NeRFUnc: 为不同的场景或特殊用途定制的NeRF变种。
+
 class Transhead(NeRF):
     """
     translation head
