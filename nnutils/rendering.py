@@ -14,12 +14,12 @@ from nnutils.geom_utils import lbs, Kmatinv, mat2K, pinhole_cam, obj_to_cam,\
 from nnutils.loss_utils import elastic_loss, visibility_loss, feat_match_loss,\
                                 kp_reproj_loss, compute_pts_exp, kp_reproj, evaluate_mlp
 
-def render_rays(models,
-                embeddings,
-                rays,
-                N_samples=64,
-                use_disp=False,
-                perturb=0,
+def render_rays(models,         # models 是 NeRF 模型的列表，通常包括一个粗模型和一个精细模型。
+                embeddings,     # embeddings 是位置和方向的嵌入模型列表。
+                rays,           # rays 包含了光线的原点、方向以及近、远深度界限。
+                N_samples=64,   # N_samples 是每条光线上采样点的数量。
+                use_disp=False, # use_disp 指示是否在视差空间（即逆深度）中采样。
+                perturb=0,      # 其他参数如 perturb、noise_std、chunk 等用于控制渲染细节。
                 noise_std=1,
                 chunk=1024*32,
                 obj_bound=None,
@@ -45,24 +45,90 @@ def render_rays(models,
     Outputs:
         result: dictionary containing final rgb and depth maps for coarse and fine models
     """
+    # 样本数修改: 如果使用精细模型，将采样数减半，以便于后面进行重要性采样。
+    '''
+    函数的目的：
+    在这个函数中，rays 参数包含了光线的原点 rays_o、方向 rays_d，以及每条光线的近处和远处深度界限 near 和 far。这些值用于沿光线计算样本点的位置，这些样本点之后会被送入神经网络模型中以预测其颜色和透明度（密度）。
+
+    此函数的核心是对输入的光线执行一个过程，这个过程包括：
+
+    将光线的起点和方向进行编码。
+    在每条光线上均匀采样多个点。
+    根据采样点的位置和方向，使用神经网络模型计算颜色和密度。
+    可选地，使用一个细化的网络对结果进行改进
+
+
+
+    为什么如果使用精细模型，需要对采样数进行减半？
+
+    在渲染过程中，NeRF通常有两个网络：一个粗略（coarse）网络和一个精细（fine）网络。
+    粗略网络用来快速估计场景的整体结构，而精细网络则用来增强细节。
+    这里的策略是首先使用粗略网络对光线路径上的点进行采样，然后基于粗略网络的预测，
+    使用重要性采样（importance sampling）技术选择更可能贡献更多信息的点进行精细网络的采样。
+
+    重要性采样是一个统计技术，在这个上下文中，它利用了粗略网络输出的权重来指导在哪些区域进行更密集的采样。
+    这意味着在粗略网络已经选出了一些有用的点之后，精细网络不需要同样数量的采样点，
+    因为它只需要对这些选出的点进行详细处理。因此，原始的采样点数会减半，为重要性采样腾出空间，
+    最后再将重要性采样得到的点和原始采样点合并，以进行精细网络的预测。这种方法可以提高效率，
+    因为它避免了在可能不那么重要的区域上浪费计算资源。
+
+    是否一定要减半:
+    并不一定要减半。重要性采样的数量是一个可以调整的超参数，取决于你想要在计算效率和渲染质量之间做出的权衡。
+    减半是一个常用的选择，因为它在保持模型性能的同时减少了计算量。你完全可以尝试减少三分之一或其他比例，
+    然后根据实际情况来调整这个参数，以找到最适合你项目需求的设置。
+    
+    '''
     if use_fine: N_samples = N_samples//2 # use half samples to importance sample
 
+    # 提取模型和嵌入: 从传入的列表中提取出 xyz 和方向的嵌入模型。
     # Extract models from lists
     embedding_xyz = embeddings['xyz']
     embedding_dir = embeddings['dir']
 
+    # 分解输入: 从 rays 字典中分解出原点 rays_o 和方向 rays_d，以及近、远界限 near 和 far。
     # Decompose the inputs
     rays_o = rays['rays_o']
     rays_d = rays['rays_d']  # both (N_rays, 3)
     near = rays['near']
     far = rays['far']  # both (N_rays, 1)
+    '''
+        这行代码的意思是获取输入中光线方向数组 rays_d 的第一维的大小，
+        也就是光线的数量。例如，如果 rays_d 是一个形状为 (1000, 3) 的数组，
+        这意味着有 1000 条光线，每条光线有一个3维的方向向量，那么 N_rays 就会被设置为 1000。
+    '''
     N_rays = rays_d.shape[0]
 
     # Embed direction
+    # 方向嵌入: 将方向向量规范化后，使用方向嵌入模型进行嵌入。
     rays_d_norm = rays_d / rays_d.norm(2,-1)[:,None]
+
+    '''
+    这行代码表示的是将光线方向的单位向量进行嵌入（embedding），转换为一个高维空间中的向量。
+    在NeRF中，方向嵌入有助于模型理解物体表面的方向性质，如光泽和阴影。
+    嵌入模型通常是一个训练好的神经网络，它可以将3维的方向向量转换为一个更高维度的向量，
+    这个向量携带了关于方向的更丰富信息。在代码中，embedding_dir 是一个嵌入模型，rays_d_norm 是单位化后的光线方向向量，
+    dir_embedded 是嵌入后的方向向量。
+    '''
     dir_embedded = embedding_dir(rays_d_norm) # (N_rays, embed_dir_channels)
+    
+    '''
+    “深度值”（depth values）通常指的是从相机或观察点到场景中某点的距离。
+    在3D计算机图形学和视觉中，深度值用于确定对象的远近，以正确渲染3D场景。
+    例如，在一个3D场景中，摄像机到一个物体表面点的直线距离就是那个点的深度值。
+
+    “深度空间”（depth space）指的是一个以深度值为基础的坐标系，在这个坐标系中，
+    值通常是线性分布的，表示从近处到远处的范围。
+    在渲染光线时，沿着每条光线在深度空间中均匀采样点，可以得到不同深度上的颜色和密度信息，以此来重建整个场景。
+    例如，我们可以在一个线性的深度空间中采样，这意味着从近平面到远平面的每一个采样点都是均匀分布的。
+    在另一个例子中，我们可能会在视差空间（disparity space）中采样，这时候采样点更加集中在近平面，
+    因为视差变化在物体靠近摄像机时更加明显。       
+
+    '''
+
+
 
     # Sample depth points
+    # 深度点采样: 在 [0, 1] 范围内均匀采样 N_samples 次，根据是否使用视差空间采样来确定 z 值。
     z_steps = torch.linspace(0, 1, N_samples, device=rays_d.device) # (N_samples)
     if not use_disp: # use linear sampling in depth space
         z_vals = near * (1-z_steps) + far * z_steps
@@ -71,6 +137,7 @@ def render_rays(models,
 
     z_vals = z_vals.expand(N_rays, N_samples)
     
+    # 采样点扰动: 如果 perturb 大于 0，将采样深度（z 值）进行扰动，以增加渲染时的随机性。
     if perturb > 0: # perturb sampling depths (z_vals)
         z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) # (N_rays, N_samples-1) interval mid points
         # get intervals between samples
@@ -118,7 +185,9 @@ def render_rays(models,
                           img_size, progress,opts,render_vis=render_vis)
 
     return result
-    
+
+
+
 def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals, 
         N_rays, N_samples,chunk, noise_std,
         env_code=None, weights_only=False, clip_bound = None, vis_pred=None):
