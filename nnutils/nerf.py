@@ -216,6 +216,29 @@ class NeRF(nn.Module):
         '''
 
     def forward(self, x ,xyz=None, sigma_only=False):
+        # 在 forward 函数中，这个 NeRF 类的网络首先将位置（xyz）和方向（dir）的输入数据编码为高维度特征。这些高维特征随后被用来预测每个点的颜色和密度。
+
+        '''
+        以下是关键步骤的详细解释：
+
+        输入数据 x 被分为两部分：input_xyz 和 input_dir，分别代表空间位置和观察方向。
+
+        位置输入 input_xyz 通过一系列全连接层进行编码。这些层被称为 xyz_encoding_{i+1}，其中 i 从 0 到 
+        
+        D−1（D 是层数）。如果层的索引 i 出现在 skips 列表中，输入向量和当前层的输出将被合并（concatenated），这就是所谓的 skip connection，
+        
+        它有助于保持信息并缓解梯度消失问题。
+
+        方向输入 input_dir 只在最后一层位置编码后和该位置编码的结果一起被处理，以编码方向特征。
+
+        最后的输出包括 sigma（密度）和 rgb（颜色）。sigma 由位置特征直接预测，而 rgb 由位置和方向特征共同预测。
+
+        如果设置了 sigma_only，则只计算并返回 sigma，这通常用于优化网络，只关注密度而不是颜色。
+
+        如果没有设置 raw_feat，那么输出的 rgb 颜色值将通过 sigmoid 激活函数转换为
+        [0,1] 范围内的值，这是因为颜色值需要被限制在这个范围内以表示真实世界的颜色。
+        '''
+        
         """
         Encodes input (xyz+dir) to rgb+sigma (not ready to render yet).
         For rendering this ray, please see rendering.py
@@ -279,8 +302,26 @@ class NeRF(nn.Module):
             整个 forward 函数的目的是根据输入的位置（xyz）和方向（dir）编码
             来预测每个光线上的颜色（RGB）和体积密度（sigma）。当 sigma_only 为 True 时，
             函数只预测密度，这在某些渲染步骤中是有用的，例如，当只需要深度信息而不需要颜色信息时。
-        
-        
+
+            位置编码（Position Encoding）:
+
+            位置编码是一种技术，用于将3D坐标（位置）转换成高维空间中的向量，以便能够通过神经网络捕获位置的高频细节。
+            在这个上下文中，位置编码指的是输入位置（xyz坐标）被编码为更高维度的特征表示，这在输入层 xyz_encoding_* 中完成。
+            
+            方向编码（Direction Encoding）:
+            方向编码与位置编码相似，它将射线的方向信息编码为高维特征向量。
+            在NeRF中，这允许模型捕捉光线方向如何影响场景中的颜色和亮度。这个网络通过 dir_encoding 层处理方向输入。
+            
+            编码层（Encoding Layers）:
+            编码层是一系列神经网络层，它们将输入数据（如位置或方向）转换为模型可以理解和处理的形式。
+            在NeRF中，编码层主要用于提取输入数据的特征，并将这些特征传递到模型的下一部分进行进一步处理。
+            这个模型有两组编码层：一组用于位置编码（xyz_encoding_*），另一组用于方向编码（dir_encoding）。
+
+
+            在这个 NeRF 类的实现中，模型通过一系列线性层（nn.Linear）和激活函数（默认是ReLU）处理位置和方向数据，
+            以生成RGB颜色值和透明度（sigma）。此外，这个模型还可以选择只输出透明度（通过sigma_only参数），
+            并且可以选择是否应用sigmoid函数来限制输出RGB值（通过raw_feat参数）。
+
         '''
 # Transhead, SE3head, RTHead, 
 # FrameCode, RTExplicit, RTExpMLP, ScoreHead, NeRFUnc: 为不同的场景或特殊用途定制的NeRF变种。
