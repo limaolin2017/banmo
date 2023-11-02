@@ -238,7 +238,7 @@ class NeRF(nn.Module):
         如果没有设置 raw_feat，那么输出的 rgb 颜色值将通过 sigmoid 激活函数转换为
         [0,1] 范围内的值，这是因为颜色值需要被限制在这个范围内以表示真实世界的颜色。
         '''
-        
+
         """
         Encodes input (xyz+dir) to rgb+sigma (not ready to render yet).
         For rendering this ray, please see rendering.py
@@ -321,7 +321,6 @@ class NeRF(nn.Module):
             在这个 NeRF 类的实现中，模型通过一系列线性层（nn.Linear）和激活函数（默认是ReLU）处理位置和方向数据，
             以生成RGB颜色值和透明度（sigma）。此外，这个模型还可以选择只输出透明度（通过sigma_only参数），
             并且可以选择是否应用sigmoid函数来限制输出RGB值（通过raw_feat参数）。
-
         '''
 # Transhead, SE3head, RTHead, 
 # FrameCode, RTExplicit, RTExpMLP, ScoreHead, NeRFUnc: 为不同的场景或特殊用途定制的NeRF变种。
