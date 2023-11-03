@@ -223,7 +223,14 @@ def render_rays(models,         # models 是 NeRF 模型的列表，通常包括
         # output: 
         #  loss:   'img_coarse', 'sil_coarse', 'feat_err', 'proj_err' 
         #               'vis_loss', 'flo/fdp_coarse', 'flo/fdp_valid',  
-        #  not loss:   'depth_rnd', 'pts_pred', 'pts_exp'
+        #  not loss:   'depth_rnd', 'pts_pred', 'pts_exp'、
+        '''
+        为细致模型采样点:
+        如果 use_fine 为真，表示需要进行细致模型的渲染。
+        首先，使用粗略模型的结果（weights_coarse）来决定在哪些区域需要更密集的采样（这是所谓的重要性采样）。
+        sample_pdf 函数基于粗略模型的权重来采样额外的深度值，这些值后续会被用于细致模型的渲染。
+        新采样的深度值 (z_vals_) 被合并到原始的深度值中，并且排序，以便用于细致模型的渲染。 
+        '''
         with torch.no_grad():
             _, weights_coarse = inference_deform(xyz_sampled, rays, models, 
                               chunk, N_samples,
@@ -245,15 +252,27 @@ def render_rays(models,         # models 是 NeRF 模型的列表，通常包括
 
         N_samples = N_samples + N_importance # get back to original # of samples
     
+
+    '''
+    渲染结果:
+    最后，调用 inference_deform 函数使用采样点的坐标 (xyz_sampled) 和光线信息来计算最终的渲染结果。
+    '''
+
     result, _ = inference_deform(xyz_sampled, rays, models, 
                           chunk, N_samples,
                           N_rays, embedding_xyz, rays_d, noise_std,
                           obj_bound, dir_embedded, z_vals,
                           img_size, progress,opts,render_vis=render_vis)
-
+    
+    # 函数返回一个结果字典，它包含了粗略和细致模型的颜色和深度信息。
     return result
+    '''
+    整个过程涉及到两次采样：一次是初始的均匀采样，另一次是基于粗略模型权重的重要性采样。
+    这种方法可以提高渲染质量，因为它允许模型在视觉上更复杂的区域分配更多的计算资源。
+    '''
 
-
+# 为什么叫'inference':
+# 'Inference'在机器学习和统计领域指的是根据已训练好的模型和给定的输入数据预测输出结果的过程。
 
 def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals, 
         N_rays, N_samples,chunk, noise_std,
@@ -262,63 +281,91 @@ def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals,
     Helper function that performs model inference.
 
     Inputs:
-        model: NeRF model (coarse or fine)
-        embedding_xyz: embedding module for xyz
+        model: NeRF model (coarse or fine) 包含NeRF模型的字典，通常有粗糙（coarse）和细腻（fine）两种。
+        embedding_xyz: embedding module for xyz 空间位置的嵌入模型。
         xyz_: (N_rays, N_samples_, 3) sampled positions
               N_samples_ is the number of sampled points in each ray;
                          = N_samples for coarse model
-                         = N_samples+N_importance for fine model
-        dir_: (N_rays, 3) ray directions
-        dir_embedded: (N_rays, embed_dir_channels) embedded directions
-        z_vals: (N_rays, N_samples_) depths of the sampled positions
-        weights_only: do inference on sigma only or not
+                         = N_samples+N_importance for fine model 采样的空间位置点，维度为(N_rays, N_samples_, 3)
+        dir_: (N_rays, 3) ray directions  射线的方向，维度为(N_rays, 3)
+        dir_embedded: (N_rays, embed_dir_channels) embedded directions 方向的嵌入表示，维度为(N_rays, embed_dir_channels)
+        z_vals: (N_rays, N_samples_) depths of the sampled positions 采样点的深度值，维度为(N_rays, N_samples_)
+        weights_only: do inference on sigma only or not  布尔值，指示是否仅对密度（sigma）进行推理。
 
     Outputs:
         rgb_final: (N_rays, 3) the final rgb image
         depth_final: (N_rays) depth map
         weights: (N_rays, N_samples_): weights of each sample
     """
-    nerf_sdf = models['coarse']
-    N_samples_ = xyz_.shape[1]
+
+    '''
+    函数用途:
+    这个函数负责根据输入的空间位置（xyz_）、方向（dir_和dir_embedded）和深度值（z_vals），通过NeRF模型来预测每个采样点的颜色（RGB值）和透明度（或称为密度）。然后使用体积渲染公式来合成整条射线上的颜色，从而得到最终图像的颜色和深度图。例如，假设你有一个3D场景，你想渲染一个视角下的图像，你会沿着视角向场景内部发射许多射线，对于每条射线，这个函数计算它通过场景时的颜色变化。
+    
+    'dir_'和'dir_embedded'的区别:
+    dir_ 是射线的方向向量，而 dir_embedded 是经过嵌入（embedding）网络处理后的射线方向。嵌入网络通常使用一些高维变换来增加数据的表现力，以便NeRF模型能更好地解释方向对光线颜色的影响。
+    
+    
+    '''
+    nerf_sdf = models['coarse']     # 从模型字典中获取粗糙模型。
+    # xyz_ 是沿射线采样的三维空间点的坐标，形状为 (N_rays, N_samples_, 3)，
+    # 其中 N_rays 是射线的数量，N_samples_ 是每条射线上采样点的数量。
+    N_samples_ = xyz_.shape[1]      # 获取每条射线的采样点数。
     # Embed directions
-    xyz_ = xyz_.view(-1, 3) # (N_rays*N_samples_, 3)
-    if not weights_only:
+    xyz_ = xyz_.view(-1, 3) # (N_rays*N_samples_, 3) 将采样点重塑为合适的形状以进行推理。
+    '''
+    这行代码 dir_embedded = torch.repeat_interleave(dir_embedded, repeats=N_samples_, dim=0) 的意思是
+    将嵌入后的方向向量 dir_embedded 沿着第一个维度（射线的数量）重复 N_samples_ 次。
+    N_samples_ 是每条射线上采样的点数。这样做的目的是为了匹配位置点 xyz_ 的数量，
+    因为每个位置点都需要一个对应的方向向量来计算颜色。如果 weights_only 为 False，
+    表示不仅需要计算透明度权重，还需要计算颜色，所以需要重复方向向量以便于后续的计算。
+    '''
+    if not weights_only:            
         dir_embedded = torch.repeat_interleave(dir_embedded, repeats=N_samples_, dim=0)
                        # (N_rays*N_samples_, embed_dir_channels)
 
     # Perform model inference to get rgb and raw sigma
-    chunk_size=4096
-    B = xyz_.shape[0]
-    xyz_input = xyz_.view(N_rays,N_samples,3)
-    out = evaluate_mlp(nerf_sdf, xyz_input, 
+    chunk_size=4096     # 设置批量处理的块大小。
+    B = xyz_.shape[0]   # 计算批处理的总数。
+    xyz_input = xyz_.view(N_rays,N_samples,3)   # 重新组织输入数据。
+    # 函数进行模型推理，计算rgb值和原始sigma。
+    out = evaluate_mlp(nerf_sdf, xyz_input,     
             embed_xyz = embedding_xyz,
             dir_embedded = dir_embedded.view(N_rays,N_samples,-1),
             code=env_code,
             chunk=chunk_size, sigma_only=weights_only).view(B,-1)
 
-    rgbsigma = out.view(N_rays, N_samples_, 4)
-    rgbs = rgbsigma[..., :3] # (N_rays, N_samples_, 3)
-    sigmas = rgbsigma[..., 3] # (N_rays, N_samples_)
+    rgbsigma = out.view(N_rays, N_samples_, 4)  # 将输出重新组织为rgb和sigma。
+    rgbs = rgbsigma[..., :3] # (N_rays, N_samples_, 3)  # 获取rgb值。
+    sigmas = rgbsigma[..., 3] # (N_rays, N_samples_)    # # 获取sigma值。
 
+    # 如果有特征模型，则进行推理
     if 'nerf_feat' in models.keys():
         nerf_feat = models['nerf_feat']
-        feat = evaluate_mlp(nerf_feat, xyz_input,
+        feat = evaluate_mlp(nerf_feat, xyz_input,  
             embed_xyz = embedding_xyz,
             chunk=chunk_size).view(N_rays,N_samples_,-1)
+    #  否则使用全零矩阵。
     else:
         feat = torch.zeros_like(rgbs)
 
     # Convert these values using volume rendering (Section 4)
-    deltas = z_vals[:, 1:] - z_vals[:, :-1] # (N_rays, N_samples_-1)
+    # 计算每对相邻采样点之间的距离
+    '''
+    计算每对相邻采样点之间的距离的原因:
+    这个距离用于计算体渲染中每个采样点的贡献，包括颜色和密度的累积，这是体渲染算法的关键部分。
+    '''
+    deltas = z_vals[:, 1:] - z_vals[:, :-1] # (N_rays, N_samples_-1) 
     # a hacky way to ensures prob. sum up to 1     
     # while the prob. of last bin does not correspond with the values
-    delta_inf = 1e10 * torch.ones_like(deltas[:, :1]) # (N_rays, 1) the last delta is infinity
+    delta_inf = 1e10 * torch.ones_like(deltas[:, :1]) # (N_rays, 1) the last delta is infinity  为最后一个采样点设置无限大的深度差。
     deltas = torch.cat([deltas, delta_inf], -1)  # (N_rays, N_samples_)
 
     # Multiply each distance by the norm of its corresponding direction ray
     # to convert to real world distance (accounts for non-unit directions).
     deltas = deltas * torch.norm(dir_.unsqueeze(1), dim=-1)
-
+    
+    # 计算实际世界距离并添加噪声。
     noise = torch.randn(sigmas.shape, device=sigmas.device) * noise_std
 
     # compute alpha by the formula (3)
@@ -333,31 +380,43 @@ def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals,
     #sigmas = F.sigmoid(-sdf*ibetas)
     sigmas = sigmas * ibetas
 
+    # alphas代表不透明度
     alphas = 1-torch.exp(-deltas*sigmas) # (N_rays, N_samples_), p_i
 
+    # 设置边界条件和可见性：
     #set out-of-bound and nonvisible alphas to zero
+    # oob: 如果采样点超出边界，则将其透明度设置为0。
     if clip_bound is not None:
         clip_bound = torch.Tensor(clip_bound).to(xyz_.device)[None,None]
         oob = (xyz_.abs()>clip_bound).sum(-1).view(N_rays,N_samples)>0
         alphas[oob]=0
+    #  根据可见性预测来调整透明度。
     if vis_pred is not None:
         alphas[vis_pred<0.5] = 0
 
     alphas_shifted = \
         torch.cat([torch.ones_like(alphas[:, :1]), 1-alphas+1e-10], -1) # [1, a1, a2, ...]
+    # 计算透明度的累积乘积。
     alpha_prod = torch.cumprod(alphas_shifted, -1)[:, :-1]
+    # 计算每个采样点的权重
     weights = alphas * alpha_prod # (N_rays, N_samples_)
+    # 计算沿射线的累积不透明度。
     weights_sum = weights.sum(1) # (N_rays), the accumulated opacity along the rays
                                  # equals "1 - (1-a1)(1-a2)...(1-an)" mathematically
+    # 计算可见性。
     visibility = alpha_prod.detach() # 1 q_0 q_j-1
 
+    # 计算加权的最终输出，包括rgb图像、特征和深度图。
     # compute final weighted outputs
     rgb_final = torch.sum(weights.unsqueeze(-1)*rgbs, -2) # (N_rays, 3)
     feat_final = torch.sum(weights.unsqueeze(-1)*feat, -2) # (N_rays, 3)
     depth_final = torch.sum(weights*z_vals, -1) # (N_rays)
 
     return rgb_final, feat_final, depth_final, weights, visibility
-    
+
+    # 这个函数的核心是将空间点的颜色和密度值转换为一张图片，并返回对应的rgb值、特征、深度图以及每个采样点的权重和可见性。
+    # 这是体积渲染算法的一个关键步骤，它允许NeRF模型生成具有深度感知的3D渲染图片。
+
 def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
                          N_rays, embedding_xyz, rays_d, noise_std,
                          obj_bound, dir_embedded, z_vals,
