@@ -305,6 +305,11 @@ def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals,
     'dir_'和'dir_embedded'的区别:
     dir_ 是射线的方向向量，而 dir_embedded 是经过嵌入（embedding）网络处理后的射线方向。嵌入网络通常使用一些高维变换来增加数据的表现力，以便NeRF模型能更好地解释方向对光线颜色的影响。
     
+    函数 torch.repeat_interleave() 在这里被用于创建一个与采样点数量相匹配的方向向量 dir_embedded 的副本，因为每个采样点都需要与一个方向向量相对应来计算其颜色值。
+
+    dir_ 是原始的射线方向向量，而 dir_embedded 是经过嵌入网络处理后的方向向量，这种嵌入通常是一种高维表示，它捕捉了方向的细微变化，这在神经辐射场模型中是重要的。这个嵌入的方向向量 dir_embedded 将与空间位置 xyz_ 结合，一起输入到 NeRF 模型中以计算颜色。
+
+    在推理过程中，每个射线上有多个采样点，每个采样点都需要一个方向向量来计算其颜色。因此，对于射线上的每个采样点，我们都需要复制 dir_embedded。dir_ 本身并不需要复制，因为它仅表示射线的原始方向，并不直接用于模型的颜色计算。
     
     '''
     nerf_sdf = models['coarse']     # 从模型字典中获取粗糙模型。
@@ -352,6 +357,15 @@ def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals,
     B = xyz_.shape[0]   # 计算批处理的总数。
     xyz_input = xyz_.view(N_rays,N_samples,3)   # 重新组织输入数据。
     # 函数进行模型推理，计算rgb值和原始sigma。
+    '''
+    evaluate_mlp 函数负责处理配对功能。当 xyz_input 和 dir_embedded 被送入 evaluate_mlp 函数时，
+    由于它们的形状都是 (N_rays, N_samples, -1)，这个函数隐含地对每一对位置和方向嵌入向量进行操作。
+
+    evaluate_mlp 函数会接受这些输入，然后对每一组位置向量和方向嵌入向量进行评估，
+    得到对应的颜色值和密度值。因为这两个输入已经具有相同的第一维度（即光线的数量）和第二维度（即每条光线上的样本数量），
+    所以模型会对每一对 (xyz, dir) 进行计算。这就是如何确保每个位置点的计算都与相应的方向信息配对的。
+    
+    '''
     out = evaluate_mlp(nerf_sdf, xyz_input,     
             embed_xyz = embedding_xyz,
             dir_embedded = dir_embedded.view(N_rays,N_samples,-1),
