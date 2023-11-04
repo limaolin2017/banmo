@@ -604,26 +604,43 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
         flow_bw = evaluate_mlp(model_flowbw, xyz_coarse_embedded, 
                              chunk=chunk//N_samples, xyz=xyz_coarse_sampled, code=time_embedded)
         xyz_coarse_sampled=xyz_coarse_sampled + flow_bw # 并将其加到原始采样点上，得到位移后的点 xyz_coarse_sampled。
-       
+
+        # 如果要进行更精细的迭代（fine_iter）：
         if fine_iter:
             # cycle loss (in the joint canonical space)
+            # 对更新后的采样点 xyz_coarse_sampled 再次进行空间嵌入。
+            '''
+            更新的坐标：当 xyz_coarse_sampled 被 flow_bw 更新后，它们的空间位置已经改变。
+            由于空间嵌入的目的是捕捉这些空间位置的特性，更新后的坐标需要重新进行嵌入以反映它们新的位置。
+            '''
             xyz_coarse_embedded = embedding_xyz(xyz_coarse_sampled)
+            # 使用向前流模型 model_flowfw 评估流，预测经过向后流变化后的点在时间维度上的位移。
             flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                                   chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded)
+            # 计算循环一致性损失（cycle loss），这是评估向前流和向后流的和的欧几里得范数，以确保变形的连续性和一致性。
             frame_cyc_dis = (flow_bw+flow_fw).norm(2,-1)
+            # 计算刚性损失（rigidity loss），即向前流的欧几里得范数，用于评估点位移的刚性。
             # rigidity loss
             frame_disp3d = flow_fw.norm(2,-1)
 
+            # 如果存在目标时间嵌入：
             if "time_embedded_target" in rays.keys():
+                # 获取目标时间的嵌入向量 time_embedded_target。
                 time_embedded_target = rays['time_embedded_target'][:,None]
+                # 使用目标时间的嵌入向量和向前流模型 model_flowfw 评估流，预测点在目标时间的位移。
                 flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                           chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded_target)
+                # 并更新 xyz_coarse_target
                 xyz_coarse_target=xyz_coarse_sampled + flow_fw
             
+            # 如果存在用于去靶心（den-targeting）的时间嵌入
             if "time_embedded_dentrg" in rays.keys():
+                # 获取去靶心时间的嵌入向量 time_embedded_dentrg。
                 time_embedded_dentrg = rays['time_embedded_dentrg'][:,None]
+                # 使用去靶心时间的嵌入向量和向前流模型 model_flowfw 评估流，预测点在去靶心时间的位移，
                 flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                           chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded_dentrg)
+                # 并更新 xyz_coarse_dentrg。
                 xyz_coarse_dentrg=xyz_coarse_sampled + flow_fw
 
     '''
