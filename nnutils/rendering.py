@@ -463,24 +463,147 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
     fine_iter: whether to render loss-related terms
     render_vis: used for novel view synthesis
     """
-    is_training = models['coarse'].training
-    xys = rays['xys']
+    '''
+    输入：
+    xyz_coarse_sampled 含义是：xyz: 指的是三维坐标系中的点，通常是 x, y, 和 z 坐标。
+        coarse: 指的是这些点是用于粗略估计场景的第一步，NeRF模型通常有两个阶段：粗糙阶段和精细阶段。
+        粗略阶段快速估计整个体积的密度和颜色，然后精细阶段会在重要区域进行更精细的采样和估计。
+        sampled: 表示这些点是从沿射线的连续区域中采样得到的。
+    rays: 各种射线和视图的参数集合,rays 参数可能包含如下信息：
+        xys: 2D 像素坐标
+        rays_d: 射线方向
+        time_embedded: 用于处理动态场景的时间嵌入向量
+        env_code 或 vid_code: 环境或视频的编码，用于条件渲染
+        ts: 可能表示时间步长的参数
+    models: 包含不同部分的 NeRF 模型的字典
+    chunk: 用于计算的数据块的大小 参数 chunk 通常用于指定在单个批次中处理的射线数量或者采样点数量。
+        这是为了在推理（或训练）过程中控制内存使用量，以免超出可用的计算资源，特别是在 GPU 上。
+        由于 NeRF 模型通常需要对成千上万条射线进行采样和评估，这可能需要大量的内存。
+        通过将这些射线分成更小的批次或“块”来处理，可以保证即使是具有有限内存的系统也能够处理这些计算。
+        每个“块”包含了一定数量的射线或采样点，并且依次处理每个块，直到所有射线都被评估为止。
+    N_samples: 每条射线上采样点的数量
+    N_rays: 射线的数量
+    embedding_xyz: 空间位置的嵌入函数, 它接受三维空间中的点坐标作为输入，并输出这些点的嵌入表示。
+        这个嵌入表示然后被用作神经网络（比如 NeRF）的输入，以便进行场景的体积渲染。
+        例如，对于 NeRF 应用，原始的x,y,z 坐标可能会通过傅里叶变换或其他映射变为一个更高维的空间，
+        以帮助模型更好地学习和渲染复杂的场景细节。这种技术是提高渲染质量和模型性能的关键步骤之一。
+    rays_d: 射线方向
+    noise_std: 添加到体积密度预测中的噪声标准差
+    obj_bound: 通常指的是用于确定场景或对象边界的参数。在三维渲染和图形中，obj_bound 可以用来指定一个空间区域，
+        比如一个盒子（bounding box），它定义了你希望渲染或进行处理的区域的大小和位置。
+        例如，在使用神经辐射场（NeRF）进行场景渲染时，obj_bound 可以用来指定场景的大小，
+        确保渲染过程中只考虑这个空间区域内的点。这有助于优化性能，因为它允许模型忽略不在感兴趣区域外的点。
+        在上下文中，obj_bound 可能是一个三元组或六元组，表示场景的最小和最大坐标。
+        例如，如果场景被限制在一个单位立方体中，obj_bound 可能是 (-1, -1, -1, 1, 1, 1)，
+        这表示对象在 x、y、z 轴上的边界分别在 -1 和 1 之间。
+        在代码中，obj_bound 可能被用于以下几种情况：
 
+        在渲染可见性时，确定哪些点应该被认为是在对象的边界内，哪些点应该被忽略。
+        在体积渲染中，用于确定积分的终止条件，即在哪个点停止沿射线积分。
+        在变形或动画中，确定哪些点可以移动，以及它们可以移动的范围。
+        由于具体的实现细节可能会根据实际的应用场景和代码库的设计而有所不同，obj_bound 的确切含义和用法需要结合上下文来理解
+    dir_embedded: 射线方向的嵌入表示
+    z_vals: 沿射线的深度值
+    img_size: 图像的大小
+    progress: 渲染进度
+    opts: 选项和配置
+    fine_iter: 是否渲染与损失相关的项。当 fine_iter 为 True，函数会计算一些额外的信息，
+        比如循环一致性（cycle consistency）损失和刚度（rigidity）损失，
+        这些信息通常用于优化模型的表现。当 fine_iter 为 False，这些额外的计算可以被省略，
+        这通常在纯粹的渲染或推理阶段，而非训练阶段发生。
+        例子：
+        假设我们正在训练一个用于渲染动态场景的 NeRF 模型。
+        在每次训练迭代中，我们希望计算额外的损失项来引导模型更好地学习场景的动态变化。
+        在这种情况下，我们可以将 fine_iter 设置为 True，样，inference_deform 函数会执行额外的损失相关计算，
+        它们将用于反向传播和模型参数的更新。
+        另一方面，如果我们已经完成了训练，现在只想用训练好的模型来渲染图像，我们可以将 fine_iter 设置为 False，
+        在这种情况下，inference_deform 将跳过那些仅在训练时需要的计算，可能会导致渲染速度更快。
+
+
+    render_vis: 是否用于新视图合成
+
+    输出：
+    result: 包含渲染结果和相关数据的字典
+    weights_coarse: 粗糙渲染权重
+    
+    
+    '''
+    is_training = models['coarse'].training # 检查粗糙模型是否在训练模式。
+    '''
+    在 PyTorch 中，模型对象（通常是 nn.Module 的子类）具有 .training 属性，该属性是一个布尔值，
+    表示模型当前是处于训练模式（.training == True）还是评估模式（.training == False）。
+    在训练模式下，模型会记录梯度，并且某些层（如 Dropout 和 BatchNorm）会表现出与评估模式不同的行为。
+    举个例子，假设我们有一个简单的神经网络模型，我们可以根据是否正在训练来改变其行为：
+    在这个例子中，.train() 方法被用来将模型设置为训练模式，.eval() 方法被用来将模型设置为评估模式。
+    根据 model.training 的值，dropout 层会在训练模式下随机“关闭”一些神经元以防止过拟合，在评估模式下则不会这样做。
+    '''
+    xys = rays['xys']   # 提取射线参数中的 xy 坐标。
+
+    # 以下是处理点的变形和运动的代码块：
     # root space point correspondence in t2
+    # 如果 opts.dist_corresp 为真，函数会克隆粗糙采样点的位置用于后续的变换计算。
+    '''
+    xyz_coarse_target = xyz_coarse_sampled.clone(): 
+        创建 xyz_coarse_sampled 的一个完全独立的副本，并将其赋值给 xyz_coarse_target。
+        这意味着后续的操作会在 xyz_coarse_target 上执行，而不会影响 xyz_coarse_sampled。
+    xyz_coarse_dentrg = xyz_coarse_sampled.clone(): 
+        同样创建了 xyz_coarse_sampled 的另一个副本，并赋值给 xyz_coarse_dentrg。
+    xyz_coarse_frame = xyz_coarse_sampled.clone(): 
+        再次复制 xyz_coarse_sampled，赋值给 xyz_coarse_frame。
+    
+    '''
+    # 后续的变形操作可以分别应用于这三个副本上，而原始的 xyz_coarse_sampled 仍然保持不变，以便于比较和其他计算。
+    # 可能是一个配置选项，指示是否需要距离对应关系
     if opts.dist_corresp:
         xyz_coarse_target = xyz_coarse_sampled.clone()
         xyz_coarse_dentrg = xyz_coarse_sampled.clone()
     xyz_coarse_frame  = xyz_coarse_sampled.clone()
 
     # free deform
+    '''
+    如果模型字典中包含 flowbw 键，表明要考虑背向流模型 model_flowbw 和前向流模型 model_flowfw。
+    这部分代码通过这两个模型预测点的运动，以及实现循环一致性和刚度损失。
+    '''
+
+    '''
+    这段代码处理的是一种称为“双向流”的变形过程，其中模型预测了从一个时间步到另一个时间步的点的运动。
+    它使用了两个模型：model_flowbw（向后流）和model_flowfw（向前流），来估计点在时间维度上的位移。
+    这通常用于处理动态场景，其中物体或相机之间的位置随时间变化。
+    '''
+    # 检查模型字典 models 是否包含键 flowbw，这意味着需要进行向后（backward）流预测。
+    '''
+    这段代码似乎是基于神经辐射场（NeRF）的扩展，用于处理动态场景。
+    在NeRF的基础上，引入了时间维度的处理，以及对流动（或位移）的估计，这允许模型捕捉场景随时间的变化。
+    具体来说，它使用神经网络来预测从一个时间步到另一个时间步的点的位移，这在处理视频或动态场景的NeRF应用中是非常重要的。
+    
+    '''
     if 'flowbw' in models.keys():
-        model_flowbw = models['flowbw']
-        model_flowfw = models['flowfw']
-        time_embedded = rays['time_embedded'][:,None]
-        xyz_coarse_embedded = embedding_xyz(xyz_coarse_sampled)
+        model_flowbw = models['flowbw'] # 从字典中获取 model_flowbw，这是用于计算向后流的神经网络模型。
+        model_flowfw = models['flowfw'] # 这是用于计算向前（forward）流的神经网络模型。
+        '''
+        [:, None] 是一种索引操作，它的作用是增加数组的一个维度。
+        这种操作通常用于将一维数组转换为二维列向量。这里的 None 是一个内置常量，当它用在索引操作中时，
+        它等同于 numpy.newaxis，其作用是在这个位置增加一个新的轴。
+        rays 是一个字典，其中包含不同的射线（rays）相关数据，这里可能是与时间相关的信息。
+        rays['time_embedded'] 通过键 'time_embedded' 从字典中获取时间嵌入向量，这是一个一维数组。
+        [:, None] 被用来将 rays['time_embedded'] 转换为一个二维数组（列向量）。如果 rays['time_embedded'] 原本的形状是 (n,)，那么操作后的形状会变成 (n, 1)。
+        '''
+        time_embedded = rays['time_embedded'][:,None] # 这是表示时间信息的嵌入向量。
+        xyz_coarse_embedded = embedding_xyz(xyz_coarse_sampled) # 对粗糙采样的点 xyz_coarse_sampled 进行空间嵌入。
+        # 使用向后流模型 model_flowbw 评估流，预测每个点在时间维度上的位移
+        '''
+        model_flowbw：这是一个MLP神经网络模型，它被训练用来预测点云的时间维度上的位移。
+        xyz_coarse_embedded：表示点云的空间位置的嵌入向量。
+            在神经场景表示中，原始三维坐标通常被嵌入到一个高维空间以捕获更丰富的信息。
+        chunk=chunk//N_samples：这指定了处理的批次大小。由于GPU的内存限制，通常需要将大量的点云分批处理。
+            这里它将原始的批量大小 chunk 除以每条光线的样本数 
+        N_samples，这可能是因为每个点都需要单独评估，所以总批次大小需要相应减小。
+        xyz=xyz_coarse_sampled：这是实际的三维点云数据，表示点云在空间中的位置。
+        code=time_embedded：这是时间信息的嵌入向量，它提供了模型预测位移的时间上下文。
+        '''
         flow_bw = evaluate_mlp(model_flowbw, xyz_coarse_embedded, 
                              chunk=chunk//N_samples, xyz=xyz_coarse_sampled, code=time_embedded)
-        xyz_coarse_sampled=xyz_coarse_sampled + flow_bw
+        xyz_coarse_sampled=xyz_coarse_sampled + flow_bw # 并将其加到原始采样点上，得到位移后的点 xyz_coarse_sampled。
        
         if fine_iter:
             # cycle loss (in the joint canonical space)
@@ -503,6 +626,10 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
                           chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded_dentrg)
                 xyz_coarse_dentrg=xyz_coarse_sampled + flow_fw
 
+    '''
+    如果模型字典中包含 bones 键，表明要使用基于骨骼的变形方法，
+    这部分代码使用线性混合皮肤算法（LBS）和高斯 MLP 皮肤算法来变形点。
+    '''
 
     elif 'bones' in models.keys():
         bones_rst = models['bones_rst']
