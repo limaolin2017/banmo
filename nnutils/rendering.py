@@ -578,6 +578,7 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
     
     '''
     if 'flowbw' in models.keys():
+        # flowbw（向后流模型）和flowfw（向前流模型）通常是成对出现的，因为它们共同负责估计时间维度上的双向流动。
         model_flowbw = models['flowbw'] # 从字典中获取 model_flowbw，这是用于计算向后流的神经网络模型。
         model_flowfw = models['flowfw'] # 这是用于计算向前（forward）流的神经网络模型。
         '''
@@ -604,98 +605,123 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
         flow_bw = evaluate_mlp(model_flowbw, xyz_coarse_embedded, 
                              chunk=chunk//N_samples, xyz=xyz_coarse_sampled, code=time_embedded)
         xyz_coarse_sampled=xyz_coarse_sampled + flow_bw # 并将其加到原始采样点上，得到位移后的点 xyz_coarse_sampled。
-
-        # 如果要进行更精细的迭代（fine_iter）：
+       
+        # 检查 fine_iter 是否为 True。这是一个条件，如果为 True，则执行以下的代码块。
         if fine_iter:
             # cycle loss (in the joint canonical space)
-            # 对更新后的采样点 xyz_coarse_sampled 再次进行空间嵌入。
-            '''
-            更新的坐标：当 xyz_coarse_sampled 被 flow_bw 更新后，它们的空间位置已经改变。
-            由于空间嵌入的目的是捕捉这些空间位置的特性，更新后的坐标需要重新进行嵌入以反映它们新的位置。
-            '''
+            # 将粗糙样本点 xyz_coarse_sampled 通过嵌入函数 embedding_xyz 进行转换，得到其嵌入表示 xyz_coarse_embedded。
             xyz_coarse_embedded = embedding_xyz(xyz_coarse_sampled)
-            # 使用向前流模型 model_flowfw 评估流，预测经过向后流变化后的点在时间维度上的位移。
+            # 使用多层感知器 (MLP) 模型 model_flowfw 来评估前向流 flow_fw。这使用了嵌入的粗糙样本点，
+            # 块大小（每块的数据量）由 chunk 除以样本数量 N_samples 决定，还需要原始的粗糙样本点和时间嵌入 time_embedded。
             flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                                   chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded)
-            # 计算循环一致性损失（cycle loss），这是评估向前流和向后流的和的欧几里得范数，以确保变形的连续性和一致性。
+            # 计算前向流 flow_fw 和一个未在代码中定义的后向流 flow_bw 的和，然后取其L2范数。这可能是为了计算一个循环损失，表示前向和后向流之间的一致性。
             frame_cyc_dis = (flow_bw+flow_fw).norm(2,-1)
             # 计算刚性损失（rigidity loss），即向前流的欧几里得范数，用于评估点位移的刚性。
             # rigidity loss
+            # 计算前向流 flow_fw 的L2范数。这表示3D点的位移量。
             frame_disp3d = flow_fw.norm(2,-1)
 
-            # 如果存在目标时间嵌入：
+            # 检查 rays 字典是否包含键 "time_embedded_target"。
             if "time_embedded_target" in rays.keys():
-                # 获取目标时间的嵌入向量 time_embedded_target。
+                # 如果上述条件满足，从 rays 字典中提取 "time_embedded_target" 并增加一个新的轴。
                 time_embedded_target = rays['time_embedded_target'][:,None]
-                # 使用目标时间的嵌入向量和向前流模型 model_flowfw 评估流，预测点在目标时间的位移。
+                # 重新评估前向流，但这次使用 time_embedded_target 作为时间嵌入。
                 flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                           chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded_target)
-                # 并更新 xyz_coarse_target
+                # 更新粗糙样本点的位置，将前向流加到原始的粗糙样本点上。
                 xyz_coarse_target=xyz_coarse_sampled + flow_fw
             
-            # 如果存在用于去靶心（den-targeting）的时间嵌入
+            # 检查 rays 字典是否包含键 "time_embedded_dentrg"。
             if "time_embedded_dentrg" in rays.keys():
-                # 获取去靶心时间的嵌入向量 time_embedded_dentrg。
+                # 如果上述条件满足，从 rays 字典中提取 "time_embedded_dentrg" 并增加一个新的轴。
                 time_embedded_dentrg = rays['time_embedded_dentrg'][:,None]
-                # 使用去靶心时间的嵌入向量和向前流模型 model_flowfw 评估流，预测点在去靶心时间的位移，
+                # 再次重新评估前向流，但这次使用 time_embedded_dentrg 作为时间嵌入。
                 flow_fw = evaluate_mlp(model_flowfw, xyz_coarse_embedded, 
                           chunk=chunk//N_samples, xyz=xyz_coarse_sampled,code=time_embedded_dentrg)
+                # 再次更新粗糙样本点的位置，将前向流加到原始的粗糙样本点上。
                 # 并更新 xyz_coarse_dentrg。
                 xyz_coarse_dentrg=xyz_coarse_sampled + flow_fw
+    # 这部分代码使用线性混合皮肤算法（LBS）和高斯 MLP 皮肤算法来变形点。
 
-    '''
-    如果模型字典中包含 bones 键，表明要使用基于骨骼的变形方法，
-    这部分代码使用线性混合皮肤算法（LBS）和高斯 MLP 皮肤算法来变形点。
-    '''
-
+    # 如果模型字典 models 中包含键 bones，表明我们将要使用基于骨骼的变形方法。
     elif 'bones' in models.keys():
+        
+        # 获取 bones_rst，这可能是骨骼的静态（或者说是初始/休息）姿态信息。
         bones_rst = models['bones_rst']
+        # 从 rays 字典中获取 bone_rts，这是与射线相关的骨骼的旋转和平移（RTS）信息，用于前向变形。
         bone_rts_fw = rays['bone_rts']
+        # 获取 skin_aux，这可能是用于变形的辅助信息，例如皮肤权重或其他与皮肤相关的参数。
         skin_aux = models['skin_aux']
+        # 获取 rest_pose_code，这是表示静态姿态的编码信息。
         rest_pose_code =  models['rest_pose_code']
+        # 调用 rest_pose_code 函数，输入是一个零张量，转换为长整型并移到 bones_rst 所在的设备（例如CPU或GPU），这可能是用来获取骨骼静态姿态的特定编码。
         rest_pose_code = rest_pose_code(torch.Tensor([0]).long().to(bones_rst.device))
         
+        # 检查 models 字典是否包含 nerf_skin。如果包含，则获取它；
+        # 如果不包含，则将 nerf_skin 设置为 None。nerf_skin 可能是与NeRF模型关联的皮肤权重信息。
         if 'nerf_skin' in models.keys():
             # compute delta skinning weights of bs, N, B
             nerf_skin = models['nerf_skin'] 
         else:
             nerf_skin = None
+        # 从 rays 字典中获取时间嵌入信息，并通过添加一个新轴来转换为二维数组。
         time_embedded = rays['time_embedded'][:,None]
         # coords after deform
+        # 执行骨骼变换函数 bone_transform，将静态姿态 bones_rst 和旋转平移信息 bone_rts_fw 结合起来，计算出变形后的骨骼位置。参数 is_vec=True 表明输入是向量形式。
         bones_dfm = bone_transform(bones_rst, bone_rts_fw, is_vec=True)
+        # 调用 gauss_mlp_skinning 函数进行高斯MLP皮肤算法变形，输入是采样的点 xyz_coarse_sampled，空间嵌入函数 embedding_xyz，
+        # 变形后的骨骼 bones_dfm，时间嵌入 time_embedded，以及可能的皮肤权重 nerf_skin 和辅助信息 skin_aux。
         skin_backward = gauss_mlp_skinning(xyz_coarse_sampled, embedding_xyz, 
                     bones_dfm, time_embedded,  nerf_skin, skin_aux=skin_aux)
 
         # backward skinning
+        # 执行线性混合皮肤算法 lbs，将原始骨骼 bones_rst 和变形信息 bone_rts_fw 应用于通过高斯MLP得到的皮肤权重 skin_backward，
+        # 以及采样的点 xyz_coarse_sampled，得到最终变形后的点。
         xyz_coarse_sampled, bones_dfm = lbs(bones_rst, 
                                                   bone_rts_fw, 
                                                   skin_backward,
                                                   xyz_coarse_sampled,
                                                   )
-
+        # 如果 fine_iter 为真，这表示需要进行一些额外的计算，如循环一致性和刚度损失。
         if fine_iter:
             #if opts.dist_corresp:
+            # 同样使用高斯MLP皮肤算法计算向前变形，但是使用的是静态姿态信息 rest_pose_code。
             skin_forward = gauss_mlp_skinning(xyz_coarse_sampled, embedding_xyz, 
                         bones_rst,rest_pose_code,  nerf_skin, skin_aux=skin_aux)
 
+            # 使用 lbs 函数计算循环变形，但是这次是从静态姿态变形到当前姿态，backward=False 表示这是一个前向变形。
             # cycle loss (in the joint canonical space)
             xyz_coarse_frame_cyc,_ = lbs(bones_rst, bone_rts_fw,
                               skin_forward, xyz_coarse_sampled, backward=False)
+
+            # 计算原始帧 xyz_coarse_frame 和循环后的帧 xyz_coarse_frame_cyc 之间的差异的L2范数，作为循环一致性损失。
             frame_cyc_dis = (xyz_coarse_frame - xyz_coarse_frame_cyc).norm(2,-1)
             
             # rigidity loss (not used as optimization objective)
+            # 获取骨骼的数量。
             num_bone = bones_rst.shape[0] 
+            # 将 bone_rts_fw 重塑为一个三维数组，第二维是骨骼的数量，第三维是12，这可能代表骨骼的旋转和平移参数。
             bone_fw_reshape = bone_rts_fw.view(-1,num_bone,12)
+            # 获取每个骨骼的平移参数。
             bone_trn = bone_fw_reshape[:,:,9:12]
+            # 获取每个骨骼的旋转参数，并将其变形为3x3的矩阵。
             bone_rot = bone_fw_reshape[:,:,0:9].view(-1,num_bone,3,3)
+            # 计算骨骼的刚度损失，包括平移参数的平方和以及旋转角度的计算。
             frame_rigloss = bone_trn.pow(2).sum(-1)+rot_angle(bone_rot)
             
+            # 如果选项 dist_corresp 为真，并且 rays 字典中有 bone_rts_target 键，执行以下代码。
             if opts.dist_corresp and 'bone_rts_target' in rays.keys():
+                # 获取目标骨骼的变形信息。
                 bone_rts_target = rays['bone_rts_target']
+                # 使用 lbs 函数计算从静态姿态到目标姿态的变形。
                 xyz_coarse_target,_ = lbs(bones_rst, bone_rts_target, 
                                    skin_forward, xyz_coarse_sampled,backward=False)
+            # 如果选项 dist_corresp 为真，并且 rays 字典中有 bone_rts_dentrg 键，执行以下代码。
             if opts.dist_corresp and 'bone_rts_dentrg' in rays.keys():
+                # 获取另一组目标骨骼的变形信息。
                 bone_rts_dentrg = rays['bone_rts_dentrg']
+                # 再次使用 lbs 函数计算从静态姿态到这组目标姿态的变形。
                 xyz_coarse_dentrg,_ = lbs(bones_rst, bone_rts_dentrg, 
                                    skin_forward, xyz_coarse_sampled,backward=False)
 
