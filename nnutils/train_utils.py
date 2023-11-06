@@ -556,7 +556,6 @@ class v2s_trainer():
                     nerf_skin = self.model.nerf_skin if opts.nerf_skin else None
                     rest_pose_code = self.model.rest_pose_code(torch.Tensor([0])\
                                             .long().to(self.device))
-                    # 这个函数根据3D点与骨骼之间的马氏距离计算高斯权重
                     skins = gauss_mlp_skinning(rest_verts[None], 
                             self.model.embedding_xyz,
                             bones_rst, rest_pose_code, 
