@@ -956,7 +956,7 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
             result['frnd_loss_samp'] = frnd_loss_samp * sil_at_samp[...,0]
     return result, weights_coarse
 
-
+# 这个函数在实现论文里的公式2，使用mlp去预测密度。
 def sample_pdf(bins, weights, N_importance, det=False, eps=1e-5):
     """
     Sample @N_importance samples from @bins with distribution defined by @weights.
