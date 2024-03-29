@@ -38,6 +38,8 @@ from nnutils.loss_utils import eikonal_loss, rtk_loss, \
                             compute_root_sm_2nd_loss, shape_init_loss
 from utils.io import draw_pts
 
+import nerfacc
+
 # distributed data parallel
 flags.DEFINE_integer('local_rank', 0, 'for distributed training')
 flags.DEFINE_integer('ngpu', 1, 'number of gpus to use')
@@ -163,6 +165,8 @@ flags.DEFINE_bool('rm_novp', True,'whether to remove loss on non-overlapping pxs
 
 # for scripts/visualize/match.py
 flags.DEFINE_string('match_frames', '0 1', 'a list of frame index')
+flags.DEFINE_bool('use_nerfacc', False, 'whether to use nerfacc')
+
 
 class banmo(nn.Module):
     def __init__(self, opts, data_info):
@@ -233,6 +237,13 @@ class banmo(nn.Module):
 
         self.vis_min=np.asarray([[0,0,0]])
         self.vis_len=self.latest_vars['obj_bound']/2
+
+        max_corner = self.vis_min + 2 * self.vis_len
+        self.roi_aabb_np = np.concatenate((self.vis_min, max_corner), axis=0)
+        
+        # Convert self.roi_aabb_np to a PyTorch tensor and flatten it
+        # The reshape(-1) will ensure the numpy array is flattened before conversion
+        self.roi_aabb = torch.tensor(self.roi_aabb_np.reshape(-1), dtype=torch.float32).to(self.device)
         
         # set shape/appearancce model
         self.num_freqs = 10
@@ -440,6 +451,16 @@ class banmo(nn.Module):
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225])
 
+        self.use_nerfacc = opts.use_nerfacc
+        
+        if self.use_nerfacc:
+            self.estimator = nerfacc.OccGridEstimator(self.roi_aabb)
+            # render parameters
+            self.render_step_size = 5e-3
+        else:
+           self.estimator = None
+        
+     
     def forward_default(self, batch):
         opts = self.opts
         # get root poses
@@ -816,6 +837,7 @@ class banmo(nn.Module):
 
         bs_rays = rays['bs'] * rays['nsample'] # over pixels
         results=defaultdict(list)
+
         for i in range(0, bs_rays, opts.chunk):
             rays_chunk = chunk_rays(rays,i,opts.chunk)
             # decide whether to use fine samples 
@@ -826,6 +848,7 @@ class banmo(nn.Module):
             rendered_chunks = render_rays(self.nerf_models,
                         self.embeddings,
                         rays_chunk,
+                        self.estimator,
                         N_samples = ndepth,
                         use_disp=False,
                         perturb=opts.perturb,
@@ -836,6 +859,7 @@ class banmo(nn.Module):
                         img_size=self.img_size,
                         progress=self.progress,
                         opts=opts,
+                        use_nerfacc = self.use_nerfacc,
                         )
             for k, v in rendered_chunks.items():
                 results[k] += [v]

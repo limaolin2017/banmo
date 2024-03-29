@@ -44,6 +44,7 @@ from dataloader import frameloader
 from utils.io import save_vid, draw_cams, extract_data_info, merge_dict,\
         render_root_txt, save_bones, draw_cams_pair, get_vertex_colors
 from utils.colors import label_colormap
+import nerfacc
 
 class DataParallelPassthrough(torch.nn.parallel.DistributedDataParallel):
     """
@@ -668,6 +669,11 @@ class v2s_trainer():
         if opts.reset_beta:
             self.model.module.nerf_coarse.beta.data[:] = 0.1
 
+        # if use_nerfacc = True, radiance_field = nerf_models['coarse']
+
+        if self.model.module.use_nerfacc:
+            radiance_field = self.model.module.nerf_models['coarse']
+        
         # start training
         for epoch in range(0, self.num_epochs):
             self.model.epoch = epoch
@@ -974,7 +980,20 @@ class v2s_trainer():
                     print('total step time:%.2f'%(time.time()-start_time))
                 torch.cuda.synchronize()
                 start_time = time.time()
-    
+
+            # if self.model.module.use_nerfacc:
+            #     def occ_eval_fn(x, render_step_size=5e-3):
+            #         density = radiance_field.forward(x, sigma_only=True)
+            #         return density * render_step_size
+            #     # how to check calling update_every_n_steps function successfully
+
+            #     # Update the occupancy grid at the specified frequency with update_every_n_steps function.
+            #     self.model.estimator.update_every_n_steps(
+            #     step=epoch,
+            #     occ_eval_fn=occ_eval_fn,
+            #     occ_thre=1e-2,
+            #     )
+
     def update_cvf_indicator(self, i):
         """
         whether to update canoical volume features

@@ -140,6 +140,7 @@ def main(_):
                 rendered_chunks = render_rays(nerf_models,
                             embeddings,
                             rays_chunk,
+                            roi_aabb=model.roi_aabb,
                             N_samples = opts.ndepth,
                             perturb=0,
                             noise_std=0,
@@ -149,6 +150,7 @@ def main(_):
                             obj_bound = model.latest_vars['obj_bound'],
                             render_vis=True,
                             opts=opts,
+                            use_nerfacc=None
                             )
                 for k, v in rendered_chunks.items():
                     results[k] += [v]

@@ -15,18 +15,43 @@ cudnn.benchmark = True
 
 from nnutils.train_utils import v2s_trainer
 
-opts = flags.FLAGS
+import os
 
+opts = flags.FLAGS
 def main(_):
-    torch.cuda.set_device(opts.local_rank)
-    world_size = opts.ngpu
-    torch.distributed.init_process_group(
-    'nccl',
-    init_method='env://',
-    world_size=world_size,
-    rank=opts.local_rank,
-    )
-    print('%d/%d'%(world_size,opts.local_rank))
+    # This prints out all the flags to the console.
+    for flag in opts.flag_values_dict():
+        print(f"{flag}: {opts[flag].value}")
+    # Diagnostic Information
+    print("os.environ.get:", os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set'))
+    print("CUDA version used by PyTorch:", torch.version.cuda)
+    print("PyTorch version:", torch.__version__)
+    import torchvision
+    print("TorchVision version:", torchvision.__version__)
+    print("torch.cuda.is_available:", torch.cuda.is_available())
+    print("torch.version.cuda:", torch.version.cuda)
+    print("torch.cuda.device_count():", torch.cuda.device_count())
+    print("opts.local_rank:", opts.local_rank)
+    print("MASTER_ADDR:", os.environ.get('MASTER_ADDR', 'Not Set'))
+    print("MASTER_PORT:", os.environ.get('MASTER_PORT', 'Not Set'))
+    
+    if torch.cuda.is_available():
+        print(torch.cuda.get_device_properties(opts.local_rank))
+
+    try:
+        torch.cuda.set_device(opts.local_rank)
+        world_size = opts.ngpu
+        torch.distributed.init_process_group(
+            'nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=opts.local_rank,
+        )
+        #print('%d/%d' % (world_size, opts.local_rank))
+        print('world_size: %d  opts.local_rank: %d' % (world_size, opts.local_rank))
+    except Exception as e:
+        print("Error while initializing CUDA or distributed process group:", str(e))
+        return
 
     torch.manual_seed(0)
     torch.cuda.manual_seed(1)
