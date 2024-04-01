@@ -2,7 +2,6 @@
 
 # adopted from nerf-pl
 import numpy as np
-from torch import Tensor
 import pdb
 import torch
 import torch.nn.functional as F
@@ -74,74 +73,74 @@ def render_rays(models,
     # print rays_o, rays_d
     # print("rays_o shape:", rays_o.shape, "rays_o:", rays_o)
 
-    if use_nerfacc:
+    # if use_nerfacc:
         
-            # 使用 nerfacc.OccGridEstimator 的采样逻辑
-            radiance_field = models['coarse']
-            def sigma_fn(t_starts, t_ends, ray_indices):
-                """ Define how to query density for the estimator."""
-                if t_starts.shape[0] == 0:
-                    sigmas = torch.empty((0, 1), device=t_starts.device)
-                else:
-                    t_origins = rays_o[ray_indices]  # (n_samples, 3)
-                    t_dirs = rays_d[ray_indices]  # (n_samples, 3)
-                    positions = t_origins + t_dirs * (t_starts + t_ends)[:, None] / 2.0
-                    embedded_positions = embedding_xyz(positions)
-                    sigmas = radiance_field.forward(embedded_positions , sigma_only=True) 
-                return sigmas  # sigmas: (n_samples,)
+    #         # 使用 nerfacc.OccGridEstimator 的采样逻辑
+    #         radiance_field = models['coarse']
+    #         def sigma_fn(t_starts, t_ends, ray_indices):
+    #             """ Define how to query density for the estimator."""
+    #             if t_starts.shape[0] == 0:
+    #                 sigmas = torch.empty((0, 1), device=t_starts.device)
+    #             else:
+    #                 t_origins = rays_o[ray_indices]  # (n_samples, 3)
+    #                 t_dirs = rays_d[ray_indices]  # (n_samples, 3)
+    #                 positions = t_origins + t_dirs * (t_starts + t_ends)[:, None] / 2.0
+    #                 embedded_positions = embedding_xyz(positions)
+    #                 sigmas = radiance_field.forward(embedded_positions , sigma_only=True) 
+    #             return sigmas  # sigmas: (n_samples,)
 
-            # 使用 nerfacc.OccGridEstimator 的采样逻辑
-            ray_indices, t_starts, t_ends = estimator.sampling(
-                 rays_o, rays_d, sigma_fn=sigma_fn, 
-                 near_plane=0.2, far_plane=1.0, early_stop_eps=1e-4, alpha_thre=1e-2, 
-             )
+    #         # 使用 nerfacc.OccGridEstimator 的采样逻辑
+    #         ray_indices, t_starts, t_ends = estimator.sampling(
+    #              rays_o, rays_d, sigma_fn=sigma_fn, 
+    #              near_plane=0.2, far_plane=1.0, early_stop_eps=1e-4, alpha_thre=1e-2, 
+    #          )
             
-            if ray_indices[0] != 0:
+    #         if ray_indices[0] != 0:
                 
-                t_mid = (t_starts + t_ends) / 2.0
-                positions = rays_o[ray_indices] + t_mid.unsqueeze(-1) * rays_d[ray_indices]
+    #             t_mid = (t_starts + t_ends) / 2.0
+    #             positions = rays_o[ray_indices] + t_mid.unsqueeze(-1) * rays_d[ray_indices]
 
-                # 初始化不规则矩阵
-                N_rays = rays_o.shape[0]
-                max_samples = ray_indices.bincount().max().item()  # 最大采样点数
+    #             # 初始化不规则矩阵
+    #             N_rays = rays_o.shape[0]
+    #             max_samples = ray_indices.bincount().max().item()  # 最大采样点数
             
-                # 定义填充值
-                padding_value = -1e10
+    #             # 定义填充值
+    #             padding_value = -1e10
 
-                # 初始化矩阵并填充
-                padded_positions = torch.full((N_rays, max_samples, 3), padding_value, device=positions.device)
-                padded_z_vals = torch.full((N_rays, max_samples), padding_value, device=rays_o.device)
+    #             # 初始化矩阵并填充
+    #             padded_positions = torch.full((N_rays, max_samples, 3), padding_value, device=positions.device)
+    #             padded_z_vals = torch.full((N_rays, max_samples), padding_value, device=rays_o.device)
 
 
-                # 使用 ray_indices 填充有效的位置数据和深度值
-                for i in range(positions.shape[0]):
-                    ray_index = ray_indices[i]
-                    sample_index = (ray_indices[:i] == ray_index).sum()
-                    padded_positions[ray_index, sample_index] = positions[i]
-                    avg_depth = (t_starts[i] + t_ends[i]) / 2.0
-                    padded_z_vals[ray_index, sample_index] = avg_depth
+    #             # 使用 ray_indices 填充有效的位置数据和深度值
+    #             for i in range(positions.shape[0]):
+    #                 ray_index = ray_indices[i]
+    #                 sample_index = (ray_indices[:i] == ray_index).sum()
+    #                 padded_positions[ray_index, sample_index] = positions[i]
+    #                 avg_depth = (t_starts[i] + t_ends[i]) / 2.0
+    #                 padded_z_vals[ray_index, sample_index] = avg_depth
                 
-                # 检查 padded_positions 的形状
-                expected_shape = (N_rays, max_samples, 3)
-                assert padded_positions.shape == expected_shape, f"Expected shape {expected_shape}, but got {padded_positions.shape}"
+    #             # 检查 padded_positions 的形状
+    #             expected_shape = (N_rays, max_samples, 3)
+    #             assert padded_positions.shape == expected_shape, f"Expected shape {expected_shape}, but got {padded_positions.shape}"
 
-                # 检查 padded_z_vals 的形状
-                expected_shape_z_vals = (N_rays, max_samples)
-                assert padded_z_vals.shape == expected_shape_z_vals, "Shape mismatch for z_vals"
+    #             # 检查 padded_z_vals 的形状
+    #             expected_shape_z_vals = (N_rays, max_samples)
+    #             assert padded_z_vals.shape == expected_shape_z_vals, "Shape mismatch for z_vals"
 
-                # 将 padded_positions 赋值给 xyz_sampled_nerfacc, here xyz_sampled_nerfacc = xyz_sampled
-                xyz_sampled = padded_positions
-                z_vals = padded_z_vals
-                print("you used nerfacc to sample points for fine model")
+    #             # 将 padded_positions 赋值给 xyz_sampled_nerfacc, here xyz_sampled_nerfacc = xyz_sampled
+    #             xyz_sampled = padded_positions
+    #             z_vals = padded_z_vals
+    #             print("you used nerfacc to sample points for fine model")
 
-                result, _ = inference_deform(xyz_sampled, rays, models, 
-                          chunk, N_samples,
-                          N_rays, embedding_xyz, rays_d, noise_std,
-                          obj_bound, dir_embedded, z_vals,
-                          img_size, progress,opts,render_vis=render_vis, use_nerfacc=use_nerfacc)
-                return result
+    #             result, _ = inference_deform(xyz_sampled, rays, models, 
+    #                       chunk, N_samples,
+    #                       N_rays, embedding_xyz, rays_d, noise_std,
+    #                       obj_bound, dir_embedded, z_vals,
+    #                       img_size, progress,opts,render_vis=render_vis, use_nerfacc=use_nerfacc)
+    #             return result
 
-    else:
+    #else:
         # Sample depth points
         z_steps = torch.linspace(0, 1, N_samples, device=rays_d.device) # (N_samples)
         if not use_disp: # use linear sampling in depth space
@@ -430,102 +429,102 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
     else:
         xyz_input = xyz_coarse_sampled
 
-    if use_nerfacc:
+    # if use_nerfacc:
 
-        radiance_field = models['coarse']
+    #     radiance_field = models['coarse']
 
-        def rgb_sigma_fn(t_starts, t_ends, ray_indices):
-            """ Query rgb and density values from a user-defined radiance field. """
-            t_origins = rays_o[ray_indices]  # (n_samples, 3)
-            t_dirs = rays_d[ray_indices]  # (n_samples, 3)
-            positions = t_origins + t_dirs * (t_starts + t_ends)[:, None] / 2.0
-            # 根据NeRF模型的要求，我们需要将位置和方向信息合并为一个张量
-            nerf_input = torch.cat([positions, t_dirs], dim=-1)
+    #     def rgb_sigma_fn(t_starts, t_ends, ray_indices):
+    #         """ Query rgb and density values from a user-defined radiance field. """
+    #         t_origins = rays_o[ray_indices]  # (n_samples, 3)
+    #         t_dirs = rays_d[ray_indices]  # (n_samples, 3)
+    #         positions = t_origins + t_dirs * (t_starts + t_ends)[:, None] / 2.0
+    #         # 根据NeRF模型的要求，我们需要将位置和方向信息合并为一个张量
+    #         nerf_input = torch.cat([positions, t_dirs], dim=-1)
 
-            # 调用NeRF模型的forward方法，获取RGB和sigma
-            output = radiance_field(nerf_input, sigma_only=False)
+    #         # 调用NeRF模型的forward方法，获取RGB和sigma
+    #         output = radiance_field(nerf_input, sigma_only=False)
 
-            # 分离RGB和sigma
-            rgbs = output[..., :3]  # (n_samples, 3)
-            sigmas = output[..., 3]  # (n_samples,)
+    #         # 分离RGB和sigma
+    #         rgbs = output[..., :3]  # (n_samples, 3)
+    #         sigmas = output[..., 3]  # (n_samples,)
 
-            return rgbs, sigmas  # (n_samples, 3), (n_samples,)
+    #         return rgbs, sigmas  # (n_samples, 3), (n_samples,)
 
-        try:
-            # Differentiable Volumetric Rendering.
-            # colors: (n_rays, 3). opacity: (n_rays, 1). depth: (n_rays, 1).
-            color, opacity, depth, extras = nerfacc.rendering(
-                t_starts, t_ends, ray_indices, n_rays=rays_o.shape[0], rgb_sigma_fn=rgb_sigma_fn)
+    #     try:
+    #         # Differentiable Volumetric Rendering.
+    #         # colors: (n_rays, 3). opacity: (n_rays, 1). depth: (n_rays, 1).
+    #         color, opacity, depth, extras = nerfacc.rendering(
+    #             t_starts, t_ends, ray_indices, n_rays=rays_o.shape[0], rgb_sigma_fn=rgb_sigma_fn)
         
 
-            # 以下部分是新添加的，用于调整 extras['trans'] 和 extras['weights']
-            N_rays = rays_o.shape[0]
-            max_samples = ray_indices.bincount().max().item()  # 最大采样点数
-            padding_value_trans = -1e10  # 为 extras['trans'] 选择一个填充值
-            padding_value_weights = 0.0  # 为 extras['weights'] 选择一个填充值
+    #         # 以下部分是新添加的，用于调整 extras['trans'] 和 extras['weights']
+    #         N_rays = rays_o.shape[0]
+    #         max_samples = ray_indices.bincount().max().item()  # 最大采样点数
+    #         padding_value_trans = -1e10  # 为 extras['trans'] 选择一个填充值
+    #         padding_value_weights = 0.0  # 为 extras['weights'] 选择一个填充值
 
-            padded_trans = torch.full((N_rays, max_samples), padding_value_trans, device=extras['trans'].device)
-            padded_weights = torch.full((N_rays, max_samples), padding_value_weights, device=extras['weights'].device)
+    #         padded_trans = torch.full((N_rays, max_samples), padding_value_trans, device=extras['trans'].device)
+    #         padded_weights = torch.full((N_rays, max_samples), padding_value_weights, device=extras['weights'].device)
 
-            # 使用 ray_indices 填充有效的透明度和权重数据
-            for i in range(extras['trans'].shape[0]):
-                ray_index = ray_indices[i]
-                sample_index = (ray_indices[:i] == ray_index).sum()
-                padded_trans[ray_index, sample_index] = extras['trans'][i]
-                padded_weights[ray_index, sample_index] = extras['weights'][i]
+    #         # 使用 ray_indices 填充有效的透明度和权重数据
+    #         for i in range(extras['trans'].shape[0]):
+    #             ray_index = ray_indices[i]
+    #             sample_index = (ray_indices[:i] == ray_index).sum()
+    #             padded_trans[ray_index, sample_index] = extras['trans'][i]
+    #             padded_weights[ray_index, sample_index] = extras['weights'][i]
 
 
-            # Error checks
-            assert color.shape[1] == 3, "Shape of 'color' should be (N_rays, 3)"
-            assert depth.shape[1] == 1, "Shape of 'depth' should be (N_rays, 1)"
+    #         # Error checks
+    #         assert color.shape[1] == 3, "Shape of 'color' should be (N_rays, 3)"
+    #         assert depth.shape[1] == 1, "Shape of 'depth' should be (N_rays, 1)"
 
-            assert padded_trans.shape == (N_rays, max_samples), \
-                f"Expected shape {(N_rays, max_samples)}, but got {padded_trans.shape}"
-            assert padded_weights.shape == (N_rays, max_samples), \
-                f"Expected shape {(N_rays, max_samples)}, but got {padded_weights.shape}"
+    #         assert padded_trans.shape == (N_rays, max_samples), \
+    #             f"Expected shape {(N_rays, max_samples)}, but got {padded_trans.shape}"
+    #         assert padded_weights.shape == (N_rays, max_samples), \
+    #             f"Expected shape {(N_rays, max_samples)}, but got {padded_weights.shape}"
 
-            if torch.isnan(color).any() or torch.isnan(depth).any():
-                raise ValueError("Output contains NaNs")
+    #         if torch.isnan(color).any() or torch.isnan(depth).any():
+    #             raise ValueError("Output contains NaNs")
 
-            if torch.isinf(color).any() or torch.isinf(depth).any():
-                raise ValueError("Output contains Infs")
+    #         if torch.isinf(color).any() or torch.isinf(depth).any():
+    #             raise ValueError("Output contains Infs")
         
-        except ValueError as e:
-            print("ValueError occurred:", e)
-            # 处理值错误，例如通过返回默认值或调整输入参数
+    #     except ValueError as e:
+    #         print("ValueError occurred:", e)
+    #         # 处理值错误，例如通过返回默认值或调整输入参数
 
-        except RuntimeError as e:
-            print("RuntimeError occurred:", e)
-            # 处理运行时错误，例如释放资源，或者尝试较小的批处理大小
+    #     except RuntimeError as e:
+    #         print("RuntimeError occurred:", e)
+    #         # 处理运行时错误，例如释放资源，或者尝试较小的批处理大小
 
-        except TypeError as e:
-            print("TypeError occurred:", e)
-            # 处理类型错误，例如检查并修正输入参数的类型
+    #     except TypeError as e:
+    #         print("TypeError occurred:", e)
+    #         # 处理类型错误，例如检查并修正输入参数的类型
 
-        except Exception as e:  # 其他所有未捕获的异常
-            raise RuntimeError(f"Unexpected error during nerfacc rendering: {e}")
+    #     except Exception as e:  # 其他所有未捕获的异常
+    #         raise RuntimeError(f"Unexpected error during nerfacc rendering: {e}")
 
-        rgb_coarse = color
-        depth_rnd = depth
+    #     rgb_coarse = color
+    #     depth_rnd = depth
 
-        vis_coarse = padded_trans
-        weights_coarse = padded_weights
+    #     vis_coarse = padded_trans
+    #     weights_coarse = padded_weights
 
 
-        if 'nerf_feat' in models.keys():
-            chunk_size=4096
-            nerf_feat = models['nerf_feat']
-            feat = evaluate_mlp(nerf_feat, xyz_input,
-                embed_xyz = embedding_xyz,
-                chunk=chunk_size).view(N_rays * max_samples, -1)
+    #     if 'nerf_feat' in models.keys():
+    #         chunk_size=4096
+    #         nerf_feat = models['nerf_feat']
+    #         feat = evaluate_mlp(nerf_feat, xyz_input,
+    #             embed_xyz = embedding_xyz,
+    #             chunk=chunk_size).view(N_rays * max_samples, -1)
             
-            assert weights_coarse.shape[0] == feat.shape[0], "Mismatch in number of rays"
-            assert weights_coarse.shape[1] == feat.shape[1], "Mismatch in number of samples"
+    #         assert weights_coarse.shape[0] == feat.shape[0], "Mismatch in number of rays"
+    #         assert weights_coarse.shape[1] == feat.shape[1], "Mismatch in number of samples"
 
-            feat_rnd = torch.sum(weights_coarse.unsqueeze(-1) * feat, dim=-2)
+    #         feat_rnd = torch.sum(weights_coarse.unsqueeze(-1) * feat, dim=-2)
 
-    else:
-        rgb_coarse, feat_rnd, depth_rnd, weights_coarse, vis_coarse = \
+    # else:
+    rgb_coarse, feat_rnd, depth_rnd, weights_coarse, vis_coarse = \
             inference(models, embedding_xyz, xyz_input, rays_d,
                     dir_embedded, z_vals, N_rays, N_samples, chunk, noise_std,
                     weights_only=False, env_code=env_code, 

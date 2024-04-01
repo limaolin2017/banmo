@@ -671,8 +671,8 @@ class v2s_trainer():
 
         # if use_nerfacc = True, radiance_field = nerf_models['coarse']
 
-        if self.model.module.use_nerfacc:
-            radiance_field = self.model.module.nerf_models['coarse']
+        # if self.model.module.use_nerfacc:
+        #     radiance_field = self.model.module.nerf_models['coarse']
         
         # start training
         for epoch in range(0, self.num_epochs):
