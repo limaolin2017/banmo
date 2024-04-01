@@ -133,7 +133,7 @@ def main(_):
                 rendered_chunks = render_rays(nerf_models,
                             embeddings,
                             rays_chunk,
-                            roi_aabb=model.roi_aabb,
+                            #roi_aabb=model.roi_aabb,
                             N_samples = opts.ndepth,
                             perturb=0,
                             noise_std=0,
