@@ -104,6 +104,9 @@ class v2s_trainer():
                     output_device=opts.local_rank,
                     find_unused_parameters=True,
             )
+        if opts.use_nerfacc:
+            self.radiance_field = self.model['coarse']
+        
         return
     
     def init_dataset(self):
@@ -277,6 +280,7 @@ class v2s_trainer():
             anneal_strategy='linear',
             final_div_factor=1./5, div_factor = 25,
             )
+
     
     def save_network(self, epoch_label, prefix=''):
         if self.opts.local_rank==0:
@@ -669,10 +673,6 @@ class v2s_trainer():
         if opts.reset_beta:
             self.model.module.nerf_coarse.beta.data[:] = 0.1
 
-        # if use_nerfacc = True, radiance_field = nerf_models['coarse']
-
-        # if self.model.module.use_nerfacc:
-        #     radiance_field = self.model.module.nerf_models['coarse']
         
         # start training
         for epoch in range(0, self.num_epochs):
@@ -914,6 +914,18 @@ class v2s_trainer():
                 if 'start_time' in locals().keys():
                     torch.cuda.synchronize()
                     print('load time:%.2f'%(time.time()-start_time))
+            
+            if opts.use_nerfacc:
+                def occ_eval_fn(x, render_step_size=5e-3):
+                    density = radiance_field.forward(x, sigma_only=True)
+                    return density * render_step_size
+
+                # Update the occupancy grid at the specified frequency with update_every_n_steps function.
+                self.model.estimator.update_every_n_steps(
+                step=epoch,
+                occ_eval_fn=occ_eval_fn,
+                occ_thre=1e-2,
+                )
 
             if not warmup:
                 self.model.module.progress = float(self.model.total_steps) /\
@@ -981,18 +993,7 @@ class v2s_trainer():
                 torch.cuda.synchronize()
                 start_time = time.time()
 
-            # if self.model.module.use_nerfacc:
-            #     def occ_eval_fn(x, render_step_size=5e-3):
-            #         density = radiance_field.forward(x, sigma_only=True)
-            #         return density * render_step_size
-            #     # how to check calling update_every_n_steps function successfully
 
-            #     # Update the occupancy grid at the specified frequency with update_every_n_steps function.
-            #     self.model.estimator.update_every_n_steps(
-            #     step=epoch,
-            #     occ_eval_fn=occ_eval_fn,
-            #     occ_thre=1e-2,
-            #     )
 
     def update_cvf_indicator(self, i):
         """

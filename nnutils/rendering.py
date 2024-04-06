@@ -31,7 +31,6 @@ def render_rays(models,
                 progress=None,
                 opts=None,
                 render_vis=False,
-                use_nerfacc = None
                 ):
     """
     Render rays by computing the output of @model applied on @rays
@@ -69,9 +68,6 @@ def render_rays(models,
     # Embed direction (what's the purpose of this?)
     rays_d_norm = rays_d / rays_d.norm(2,-1)[:,None]
     dir_embedded = embedding_dir(rays_d_norm) # (N_rays, embed_dir_channels)
-
-    # print rays_o, rays_d
-    # print("rays_o shape:", rays_o.shape, "rays_o:", rays_o)
 
     # if use_nerfacc:
         
@@ -140,62 +136,124 @@ def render_rays(models,
     #                       img_size, progress,opts,render_vis=render_vis, use_nerfacc=use_nerfacc)
     #             return result
 
+    # option 2:
+
+
+    if estimator is not None:
+        
+       # 使用 nerfacc.OccGridEstimator 的采样逻辑
+        radiance_field = models['coarse']
+
+        def sigma_fn(t_starts, t_ends, ray_indices):
+            """ Define how to query density for the estimator."""
+            t_origins = rays_o[ray_indices]  # (n_samples, 3)
+            t_dirs = rays_d[ray_indices]  # (n_samples, 3)
+            positions = t_origins + t_dirs * (t_starts + t_ends)[:, None] / 2.0
+            embedded_positions = embedding_xyz(positions)
+            sigmas = radiance_field.forward(embedded_positions , sigma_only=True) 
+            return sigmas  # sigmas: (n_samples,)
+
+        # 使用 nerfacc.OccGridEstimator 的采样逻辑
+        ray_indices, t_starts, t_ends = estimator.sampling(
+             rays_o, rays_d, sigma_fn=sigma_fn, 
+             near_plane=0.2, far_plane=1.0, early_stop_eps=1e-4, alpha_thre=1e-2, 
+        ) 
+        
+        
+        # 预计算中间深度值和位置
+        t_mid = (t_starts + t_ends) / 2.0
+        positions = rays_o[ray_indices] + t_mid.unsqueeze(-1) * rays_d[ray_indices]
+
+        # 初始化不规则矩阵
+        N_rays = rays_o.shape[0]
+        max_samples = ray_indices.bincount().max().item()  # 最大采样点数
+
+        # 定义填充值
+        padding_value = -1e10
+
+        # 初始化矩阵并填充
+        padded_positions = torch.full((N_rays, max_samples, 3), padding_value, device=positions.device)
+        padded_z_vals = torch.full((N_rays, max_samples), padding_value, device=positions.device)
+
+        # 计算每个光线上的采样点索引
+        sample_indices = torch.arange(positions.shape[0], device=positions.device)
+        counts = torch.zeros(N_rays, device=positions.device, dtype=torch.long)
+        counts.scatter_add_(0, ray_indices, torch.ones_like(ray_indices, dtype=torch.long))
+        cumulative_counts = torch.zeros(N_rays, device=positions.device, dtype=torch.long)
+        cumulative_counts[1:] = torch.cumsum(counts[:-1], dim=0)
+        sample_indices -= cumulative_counts[ray_indices]
+
+        # 使用高效的批处理操作填充有效的位置数据和深度值
+        padded_positions[ray_indices, sample_indices] = positions
+        padded_z_vals[ray_indices, sample_indices] = t_mid
+
+        # 现在，padded_positions 和 padded_z_vals 已经填充，可以继续使用这些变量进行后续操作
+        xyz_sampled = padded_positions
+        z_vals = padded_z_vals
+        
+        result, _ = inference_deform(xyz_sampled, rays, models, 
+                            chunk, N_samples,
+                            N_rays, embedding_xyz, rays_d, noise_std,
+                            obj_bound, dir_embedded, z_vals,
+                            img_size, progress,opts,render_vis=render_vis,estimator=None)
+        return result
+
     # else:
         # Sample depth points
-        z_steps = torch.linspace(0, 1, N_samples, device=rays_d.device) # (N_samples)
-        if not use_disp: # use linear sampling in depth space
-            z_vals = near * (1-z_steps) + far * z_steps
-        else: # use linear sampling in disparity space
-            z_vals = 1/(1/near * (1-z_steps) + 1/far * z_steps)
+    z_steps = torch.linspace(0, 1, N_samples, device=rays_d.device) # (N_samples)
+    if not use_disp: # use linear sampling in depth space
+        z_vals = near * (1-z_steps) + far * z_steps
+    else: # use linear sampling in disparity space
+        z_vals = 1/(1/near * (1-z_steps) + 1/far * z_steps)
 
-        z_vals = z_vals.expand(N_rays, N_samples)
+    z_vals = z_vals.expand(N_rays, N_samples)
 
-        if perturb > 0: # perturb sampling depths (z_vals)
-            z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) # (N_rays, N_samples-1) interval mid points
-            # get intervals between samples
-            upper = torch.cat([z_vals_mid, z_vals[: ,-1:]], -1)
-            lower = torch.cat([z_vals[: ,:1], z_vals_mid], -1)
+    if perturb > 0: # perturb sampling depths (z_vals)
+        z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) # (N_rays, N_samples-1) interval mid points
+        # get intervals between samples
+        upper = torch.cat([z_vals_mid, z_vals[: ,-1:]], -1)
+        lower = torch.cat([z_vals[: ,:1], z_vals_mid], -1)
             
-            perturb_rand = perturb * torch.rand(z_vals.shape, device=rays_d.device)
-            z_vals = lower + (upper - lower) * perturb_rand
+        perturb_rand = perturb * torch.rand(z_vals.shape, device=rays_d.device)
+        z_vals = lower + (upper - lower) * perturb_rand
 
         # zvals are not optimized
         # produce points in the root body space
-        xyz_sampled = rays_o.unsqueeze(1) + \
-                            rays_d.unsqueeze(1) * z_vals.unsqueeze(2) # (N_rays, N_samples, 3)
+    xyz_sampled = rays_o.unsqueeze(1) + \
+                    rays_d.unsqueeze(1) * z_vals.unsqueeze(2) # (N_rays, N_samples, 3)
 
-        if use_fine: # sample points for fine model
+    if use_fine: # sample points for fine model
             # output: 
             #  loss:   'img_coarse', 'sil_coarse', 'feat_err', 'proj_err' 
             #               'vis_loss', 'flo/fdp_coarse', 'flo/fdp_valid',  
             #  not loss:   'depth_rnd', 'pts_pred', 'pts_exp'
-                with torch.no_grad():
-                    _, weights_coarse = inference_deform(xyz_sampled, rays, models, 
+            with torch.no_grad():
+                _, weights_coarse = inference_deform(xyz_sampled, rays, models, 
                                     chunk, N_samples,
                                     N_rays, embedding_xyz, rays_d, noise_std,
                                     obj_bound, dir_embedded, z_vals,
                                     img_size, progress,opts,fine_iter=False)
 
-                # reset N_importance
-                N_importance = N_samples
-                z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) 
-                z_vals_ = sample_pdf(z_vals_mid, weights_coarse[:, 1:-1],
+            # reset N_importance
+            N_importance = N_samples
+            z_vals_mid = 0.5 * (z_vals[: ,:-1] + z_vals[: ,1:]) 
+            z_vals_ = sample_pdf(z_vals_mid, weights_coarse[:, 1:-1],
                                     N_importance, det=(perturb==0)).detach()
                         # detach so that grad doesn't propogate to weights_coarse from here
 
-                z_vals, _ = torch.sort(torch.cat([z_vals, z_vals_], -1), -1)
+            z_vals, _ = torch.sort(torch.cat([z_vals, z_vals_], -1), -1)
 
-                xyz_sampled = rays_o.unsqueeze(1) + \
+            xyz_sampled = rays_o.unsqueeze(1) + \
                                 rays_d.unsqueeze(1) * z_vals.unsqueeze(2)
 
-                N_samples = N_samples + N_importance # get back to original # of samples
+            N_samples = N_samples + N_importance # get back to original # of samples
 
-        result, _ = inference_deform(xyz_sampled, rays, models, 
+    result, _ = inference_deform(xyz_sampled, rays, models, 
                             chunk, N_samples,
                             N_rays, embedding_xyz, rays_d, noise_std,
                             obj_bound, dir_embedded, z_vals,
-                            img_size, progress,opts,render_vis=render_vis, use_nerfacc=use_nerfacc)
-        return result
+                            img_size, progress,opts,render_vis=render_vis)
+    return result
 
 def inference(models, embedding_xyz, xyz_, dir_, dir_embedded, z_vals, 
         N_rays, N_samples,chunk, noise_std,
@@ -305,7 +363,7 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
                          N_rays, embedding_xyz, rays_d, noise_std,
                          obj_bound, dir_embedded, z_vals,
                          img_size, progress, opts, fine_iter=True, 
-                         render_vis=False, ray_indices=None, t_starts=None, t_ends=None, use_nerfacc=None):
+                         render_vis=False, ray_indices=None, t_starts=None, t_ends=None, estimator=None):
     """
     fine_iter: whether to render loss-related terms
     render_vis: used for novel view synthesis
@@ -429,7 +487,7 @@ def inference_deform(xyz_coarse_sampled, rays, models, chunk, N_samples,
     else:
         xyz_input = xyz_coarse_sampled
 
-    # if use_nerfacc:
+    # if estimaotr is not None:
 
     #     radiance_field = models['coarse']
 

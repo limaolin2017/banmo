@@ -165,7 +165,7 @@ flags.DEFINE_bool('rm_novp', True,'whether to remove loss on non-overlapping pxs
 
 # for scripts/visualize/match.py
 flags.DEFINE_string('match_frames', '0 1', 'a list of frame index')
-flags.DEFINE_bool('use_nerfacc', False, 'whether to use nerfacc')
+flags.DEFINE_bool('use_nerfacc', True, 'whether to use nerfacc')
 
 
 class banmo(nn.Module):
@@ -859,7 +859,6 @@ class banmo(nn.Module):
                         img_size=self.img_size,
                         progress=self.progress,
                         opts=opts,
-                        use_nerfacc = self.use_nerfacc,
                         )
             for k, v in rendered_chunks.items():
                 results[k] += [v]
